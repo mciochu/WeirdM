@@ -140,6 +140,14 @@ const readFile = (name) => {
     }
 };
 
+const listFiles = () => {
+    try {
+        return ffmpeg.FS("readdir", "/");
+    } catch {
+        return [];
+    }
+};
+
 const unlinkQuietly = (name) => {
     try {
         ffmpeg.FS("unlink", name);
@@ -408,26 +416,41 @@ const makeVideo = async (file) => {
     await detectInputFps(inputName);
 
     setStatus(`Extracting frames at about ${fps} FPS…`);
+
+    // Explicitly use the image2 muxer and preserve the source frame rate.
+    // This avoids relying on the input extension and makes MP4/MOV/WebM
+    // decoding behave consistently in the older FFmpeg.wasm runtime.
     await runFFmpeg(
         "-y",
         "-i", inputName,
         "-map", "0:v:0",
+        "-an",
+        "-sn",
+        "-dn",
+        "-vsync", "0",
+        "-f", "image2",
+        "-start_number", "1",
         "%06d.png"
     );
 
-    let framesTotal = 0;
-    while (true) {
-        const frameName = String(framesTotal + 1).padStart(6, "0") + ".png";
-        const data = readFile(frameName);
+    const decodedFrames = listFiles()
+        .filter((name) => /^\d+\.png$/i.test(name))
+        .sort((a, b) => Number(a.slice(0, -4)) - Number(b.slice(0, -4)));
 
-        if (!data) break;
+    if (!decodedFrames.length) {
+        const files = listFiles()
+            .filter((name) => name !== "." && name !== "..")
+            .slice(0, 40);
 
-        framesTotal++;
+        throw new Error(
+            "FFmpeg decoded no video frames. " +
+            "The MP4 container is supported, but its video codec may not be " +
+            "supported by this browser FFmpeg build." +
+            (files.length ? ` Files in FFmpeg filesystem: ${files.join(", ")}.` : "")
+        );
     }
 
-    if (!framesTotal) {
-        throw new Error("FFmpeg decoded no video frames.");
-    }
+    const framesTotal = decodedFrames.length;
 
     setProgress(10);
     setStatus(`Processing ${framesTotal} frames…`);
