@@ -11,6 +11,12 @@ let mode = "bounce";
 let processing = false;
 let cancelRequested = false;
 let generatedSegments = [];
+let logLines = [];
+let logBuffer = "";
+let activeStep = "";
+let lastFfmpegOutput = "";
+
+const LOG_LIMIT = 300000;
 
 const filePicker = document.getElementById("filepicker");
 const startBtn = document.querySelector(".button.start");
@@ -20,6 +26,112 @@ const statusEl = document.getElementById("status");
 const setStatus = (message = "", isError = false) => {
     statusEl.textContent = message;
     statusEl.classList.toggle("error", isError);
+};
+
+const formatLogValue = (value) => {
+    if (value instanceof Error) return value.stack || value.message;
+    if (typeof value === "string") return value;
+    try {
+        return JSON.stringify(value);
+    } catch {
+        return String(value);
+    }
+};
+
+const renderLogs = () => {
+    const logEl = document.getElementById("logs");
+    logEl.value = logBuffer;
+    logEl.scrollTop = logEl.scrollHeight;
+};
+
+const addLog = (message, level = "INFO") => {
+    const timestamp = new Date().toISOString();
+    const prefix = `[${timestamp}] [${level}]`;
+    const line = `${prefix} ${formatLogValue(message)}`;
+
+    logLines.push(line);
+    logBuffer = logLines.join("\n");
+
+    if (logBuffer.length > LOG_LIMIT) {
+        logBuffer = logBuffer.slice(-LOG_LIMIT);
+        logLines = logBuffer.split("\n");
+    }
+
+    console.log(line);
+    renderLogs();
+};
+
+const startStep = (name) => {
+    activeStep = name;
+    addLog(`STEP START: ${name}`);
+};
+
+const finishStep = (name) => {
+    addLog(`STEP END: ${name}`);
+};
+
+const resetLogs = () => {
+    logLines = [];
+    logBuffer = "";
+    activeStep = "";
+    lastFfmpegOutput = "";
+    renderLogs();
+};
+
+const clearFfmpegLogs = () => {
+    lastFfmpegOutput = "";
+};
+
+const setFfmpegLogger = () => {
+    if (!ffmpeg) return;
+
+    ffmpeg.setLogger(({ type, message }) => {
+        const text = String(message);
+
+        if (type === "fferr") {
+            lastFfmpegOutput += text + "\n";
+            addLog(`FFmpeg STDERR: ${text}`, "FFMPEG");
+        } else {
+            addLog(`FFmpeg ${type}: ${text}`, "FFMPEG");
+        }
+    });
+};
+
+const copyLogs = async () => {
+    try {
+        await navigator.clipboard.writeText(logBuffer || "No logs.");
+        addLog("Diagnostic log copied to clipboard.", "INFO");
+        setStatus("Logs copied to clipboard.");
+    } catch (error) {
+        console.error(error);
+        setStatus("Could not copy logs. Select the log text manually.", true);
+    }
+};
+
+const downloadLogs = () => {
+    const blob = new Blob([logBuffer || "No logs."], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+
+    link.href = url;
+    link.download = `weirdm-log-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+
+const logEnvironment = () => {
+    addLog({
+        userAgent: navigator.userAgent,
+        platform: navigator.platform,
+        browserLanguage: navigator.language,
+        crossOriginIsolated: window.crossOriginIsolated,
+        sharedArrayBuffer: typeof SharedArrayBuffer !== "undefined",
+        url: window.location.href,
+        screen: `${window.innerWidth}x${window.innerHeight}`,
+    }, "ENV");
 };
 
 const setProgress = (percentage) => {
@@ -169,48 +281,57 @@ const assertOutputFile = (name, label) => {
 };
 
 const createFFmpegInstance = async () => {
+    addLog("Creating FFmpeg WASM instance…");
     ffmpeg = createFFmpeg({ log: true });
     await ffmpeg.load();
+    setFfmpegLogger();
+    addLog("FFmpeg WASM loaded.");
 };
 
 const runFFmpeg = async (...args) => {
     throwIfCancelled();
-    await ffmpeg.run(...args);
+    addLog(`FFmpeg RUN: ${args.join(" ")}`, "COMMAND");
+    clearFfmpegLogs();
+
+    try {
+        await ffmpeg.run(...args);
+    } catch (error) {
+        addLog(`FFmpeg command failed: ${args.join(" ")}`, "ERROR");
+        if (lastFfmpegOutput.trim()) {
+            addLog(`FFmpeg last output:\n${lastFfmpegOutput.trim()}`, "ERROR");
+        }
+        addLog(error, "ERROR");
+        throw error;
+    }
+
     throwIfCancelled();
 };
 
 const detectInputFps = async (inputName) => {
-    let detectedFps = null;
+    startStep("Detect input video properties");
+    clearFfmpegLogs();
 
-    ffmpeg.setLogger(({ type, message }) => {
-        if (type !== "fferr") return;
+    await runFFmpeg(
+        "-y",
+        "-i", inputName,
+        "-map", "0:v:0",
+        "-frames:v", "1",
+        "-f", "null",
+        "-"
+    );
 
-        const match = String(message).match(/(\d+(?:\.\d+)?)\s+fps\b/);
-        if (!detectedFps && match) {
-            detectedFps = Number(match[1]);
-        }
-    });
+    const probeText = lastFfmpegOutput;
+    const match = probeText.match(/(\d+(?:\.\d+)?)\s+fps\b/);
 
-    try {
-        // This is a real probe command. Running only "-i input" is invalid
-        // and was the original cause of the 5% failure.
-        await runFFmpeg(
-            "-y",
-            "-i", inputName,
-            "-map", "0:v:0",
-            "-frames:v", "1",
-            "-f", "null",
-            "-"
-        );
-    } finally {
-        ffmpeg.setLogger(() => {});
-    }
-
-    if (Number.isFinite(detectedFps) && detectedFps > 0) {
-        fps = detectedFps;
+    if (match) {
+        fps = Number(match[1]);
+        addLog(`Detected FPS: ${fps}`);
     } else {
         fps = DEFAULT_FPS;
+        addLog(`Could not reliably detect FPS; using fallback ${DEFAULT_FPS}.`, "WARN");
     }
+
+    finishStep("Detect input video properties");
 };
 
 const recycleFFmpeg = async (segmentCount, inputName) => {
@@ -274,21 +395,17 @@ const makeWebmPart = async (frameNames, segmentIndex) => {
 };
 
 const joinWebmSegments = async (segmentCount) => {
-    // Do not add "duration" lines here. The original WebM technique relies
-    // on the concat demuxer preserving each VP8 segment, including its own
-    // resolution. The resulting Matroska/WebM stream can change dimensions
-    // at segment boundaries.
+    startStep(`Join ${segmentCount} WebM segments`);
+
     const concat = Array.from(
         { length: segmentCount },
         (_, index) => `file ${index}.webm`
     ).join("\n") + "\n";
 
     writeTextFile("segments-concat.txt", concat);
+    addLog(`segments-concat.txt:\n${concat}`, "INPUT");
 
-    let log = "";
-    ffmpeg.setLogger(({ type, message }) => {
-        if (type === "fferr") log += String(message) + "\n";
-    });
+    clearFfmpegLogs();
 
     try {
         await runFFmpeg(
@@ -302,20 +419,27 @@ const joinWebmSegments = async (segmentCount) => {
             "vid.webm"
         );
     } catch (error) {
-        const detail = log.trim().split("\n").slice(-3).join(" ");
+        addLog(`Join failed for ${segmentCount} segments.`, "ERROR");
+        if (lastFfmpegOutput.trim()) {
+            addLog(`Full FFmpeg concat output:\n${lastFfmpegOutput.trim()}`, "ERROR");
+        }
         throw new Error(
-            "FFmpeg could not join the processed WebM segments." +
-            (detail ? ` ${detail}` : "")
+            "FFmpeg could not join the processed WebM segments. " +
+            "See the Diagnostic log below for the complete FFmpeg output."
         );
-    } finally {
-        ffmpeg.setLogger(() => {});
     }
 
-    return assertOutputFile("vid.webm", "Joined WebM");
+    const result = assertOutputFile("vid.webm", "Joined WebM");
+    addLog(`Joined WebM size: ${result.length} bytes.`);
+    finishStep(`Join ${segmentCount} WebM segments`);
+    return result;
 };
 
 const muxAudio = async (inputName) => {
+    startStep("Mux final WebM and source audio");
     unlinkQuietly("out.webm");
+
+    addLog(`Audio input: ${inputName}`);
 
     // First preserve an already WebM-compatible audio stream without
     // re-encoding. If that is not possible, encode to Opus/Vorbis.
@@ -340,9 +464,16 @@ const muxAudio = async (inputName) => {
                 "out.webm"
             );
 
-            return assertOutputFile("out.webm", "Final WebM");
+            const output = assertOutputFile("out.webm", "Final WebM");
+            addLog(`Final WebM created with audio codec: ${attempt.codec}; size: ${output.length} bytes.`);
+            finishStep("Mux final WebM and source audio");
+            return output;
         } catch (error) {
             console.warn(`Audio mux attempt ${attempt.codec} failed:`, error);
+            addLog(`Audio mux attempt ${attempt.codec} failed: ${formatLogValue(error)}`, "WARN");
+            if (lastFfmpegOutput.trim()) {
+                addLog(`FFmpeg audio output:\n${lastFfmpegOutput.trim()}`, "WARN");
+            }
             unlinkQuietly("out.webm");
         }
     }
@@ -355,7 +486,11 @@ const muxAudio = async (inputName) => {
     }
 
     ffmpeg.FS("writeFile", "out.webm", videoOnly);
-    return assertOutputFile("out.webm", "Final video-only WebM");
+    addLog("No compatible source audio was available; using video-only WebM.", "WARN");
+    const output = assertOutputFile("out.webm", "Final video-only WebM");
+    addLog(`Final video-only WebM size: ${output.length} bytes.`);
+    finishStep("Mux final WebM and source audio");
+    return output;
 };
 
 const cleanupWorkspace = (inputName) => {
@@ -373,6 +508,16 @@ const cleanupWorkspace = (inputName) => {
 };
 
 const makeVideo = async (file) => {
+    resetLogs();
+    addLog("========== WeirdM processing started ==========");
+    logEnvironment();
+    addLog({
+        name: file.name,
+        type: file.type || "(browser did not provide MIME type)",
+        sizeBytes: file.size,
+        lastModified: new Date(file.lastModified).toISOString(),
+    }, "INPUT");
+
     fps = DEFAULT_FPS;
     crf = clamp(Math.round(getNumericValue("crf", DEFAULT_CRF, 0, 63)), 0, 63);
     mode = getMode();
@@ -381,6 +526,7 @@ const makeVideo = async (file) => {
     const extension = getInputExtension(file);
     const inputName = `input.${extension}`;
     const outputName = sanitizeDownloadName(file.name);
+    addLog(`Input extension: ${extension}; internal FFmpeg name: ${inputName}; output: ${outputName}`, "INPUT");
 
     if (typeof SharedArrayBuffer === "undefined" || window.crossOriginIsolated !== true) {
         throw new Error(
@@ -400,13 +546,16 @@ const makeVideo = async (file) => {
     await createFFmpegInstance();
 
     setStatus("Loading image processor…");
+    startStep("Initialize ImageMagick");
     if (!window.magickReady) {
         throw new Error("ImageMagick loader is unavailable.");
     }
     await window.magickReady;
     if (!window.Magick || typeof window.Magick.Call !== "function") {
-        throw new Error("ImageMagick failed to initialize."); 
+        throw new Error("ImageMagick failed to initialize.");
     }
+    addLog("ImageMagick initialized.");
+    finishStep("Initialize ImageMagick");
     throwIfCancelled();
 
     setProgress(5);
@@ -416,6 +565,7 @@ const makeVideo = async (file) => {
     await detectInputFps(inputName);
 
     setStatus(`Extracting frames at about ${fps} FPS…`);
+    startStep("Decode source video into PNG frames");
 
     // Explicitly use the image2 muxer and preserve the source frame rate.
     // This avoids relying on the input extension and makes MP4/MOV/WebM
@@ -451,9 +601,12 @@ const makeVideo = async (file) => {
     }
 
     const framesTotal = decodedFrames.length;
+    addLog(`FFmpeg decoded ${framesTotal} PNG frames.`);
 
+    finishStep("Decode source video into PNG frames");
     setProgress(10);
     setStatus(`Processing ${framesTotal} frames…`);
+    startStep(`Apply ${mode.toUpperCase()} effect to frames`);
 
     let lastGeometry = null;
     let segmentIndex = 0;
@@ -520,6 +673,7 @@ const makeVideo = async (file) => {
         ffmpeg.FS("writeFile", frameName, result[0].buffer);
 
         if (lastGeometry !== null && lastGeometry !== normalizedGeometry) {
+            addLog(`Geometry changed: ${lastGeometry} → ${normalizedGeometry}; closing segment ${segmentIndex}`);
             if (await makeWebmPart(frameNames, segmentIndex)) {
                 segmentIndex++;
 
@@ -542,6 +696,9 @@ const makeVideo = async (file) => {
         segmentIndex++;
     }
 
+    finishStep(`Apply ${mode.toUpperCase()} effect to frames`);
+    addLog(`Generated ${segmentIndex} WebM video segments.`);
+    
     if (!segmentIndex) {
         throw new Error("No WebM segments were generated.");
     }
@@ -556,6 +713,8 @@ const makeVideo = async (file) => {
 
     setProgress(100);
     setStatus("Done. Downloading your WeirdM…");
+    addLog(`SUCCESS: output ${outputName} is ready for download.`, "SUCCESS");
+    addLog("========== WeirdM processing finished successfully ==========");
 
     const downloadData = new Uint8Array(final);
     const blob = new Blob([downloadData], { type: "video/webm" });
@@ -590,6 +749,12 @@ startBtn.addEventListener("click", async () => {
         await makeVideo(file);
     } catch (error) {
         console.error("WeirdM processing failed:", error);
+        addLog("========== WeirdM processing FAILED ==========", "ERROR");
+        addLog(`Active step: ${activeStep || "(none)"}`, "ERROR");
+        addLog(error, "ERROR");
+        if (lastFfmpegOutput.trim()) {
+            addLog(`Latest FFmpeg output:\n${lastFfmpegOutput.trim()}`, "ERROR");
+        }
 
         if (cancelRequested) {
             setProgress(-1);
@@ -614,6 +779,8 @@ startBtn.addEventListener("click", async () => {
 
         ffmpeg = null;
         setControls(false);
+        addLog("Cleanup complete.");
+
 
         if (!cancelRequested && !statusEl.classList.contains("error")) {
             setProgress(-1);
