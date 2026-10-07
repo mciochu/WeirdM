@@ -1,0 +1,85 @@
+name: Validate WeirdM
+
+on:
+  push:
+    branches:
+      - mane
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Syntax check
+        run: node --check app.js
+
+      - name: Static structure check
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+
+          const index = fs.readFileSync("index.html", "utf8");
+          const app = fs.readFileSync("app.js", "utf8");
+          const css = fs.readFileSync("app.css", "utf8");
+
+          for (const required of [
+            'src="app.js"',
+            'href="app.css"',
+            '@ffmpeg/ffmpeg@0.10.1',
+            'wasm-imagemagick@1.2.8'
+          ]) {
+            if (!index.includes(required)) {
+              throw new Error(`Missing index.html reference: ${required}`);
+            }
+          }
+
+          for (const required of [
+            "createFFmpeg",
+            "makeWebmPart",
+            "joinWebmSegments",
+            "muxAudio",
+            "cleanupWorkspace"
+          ]) {
+            if (!app.includes(required)) {
+              throw new Error(`Missing app.js component: ${required}`);
+            }
+          }
+
+          if (css.trim().length === 0) {
+            throw new Error("app.css is empty");
+          }
+
+          console.log("WeirdM static structure OK");
+          NODE
+
+      - name: Render Blueprint check
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+
+          const render = fs.readFileSync("render.yaml", "utf8");
+
+          for (const required of [
+            "runtime: static",
+            "branch: mane",
+            "staticPublishPath: .",
+            "Cross-Origin-Opener-Policy",
+            "Cross-Origin-Embedder-Policy",
+            "same-origin",
+            "require-corp"
+          ]) {
+            if (!render.includes(required)) {
+              throw new Error(`Missing render.yaml setting: ${required}`);
+            }
+          }
+
+          console.log("Render Blueprint settings OK");
+          NODE
