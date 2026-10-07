@@ -200,3 +200,42 @@ button:focus-visible {
         flex-direction: column;
     }
 }
+
+
+.diagnostics {
+    margin-top: 16px;
+}
+
+.diagnostic-actions {
+    display: flex;
+    gap: 10px;
+    margin: 12px 0;
+}
+
+.button.secondary {
+    background: #4f545c;
+}
+
+.logs {
+    width: 100%;
+    min-height: 320px;
+    max-height: 560px;
+    resize: vertical;
+    padding: 12px;
+    border: 1px solid #5c626b;
+    border-radius: 6px;
+    background: #111214;
+    color: #d7d9dc;
+    font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre;
+}
+
+@media (max-width: 600px) {
+    .diagnostic-actions {
+        flex-direction: column;
+    }
+
+    .logs {
+        min-height: 260px;
+    }
+}
