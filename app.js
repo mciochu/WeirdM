@@ -478,6 +478,12 @@ const makeVideo = async (file) => {
         if (lastGeometry !== null && lastGeometry !== normalizedGeometry) {
             if (await makeWebmPart(frameNames, segmentIndex)) {
                 segmentIndex++;
+
+                // Recycle immediately after a complete group. At this point
+                // there are no unencoded frames from the previous segment.
+                if (segmentIndex % 10 === 0) {
+                    await recycleFFmpeg(segmentIndex, inputName);
+                }
             }
             frameNames = [];
         }
@@ -486,12 +492,6 @@ const makeVideo = async (file) => {
         lastGeometry = normalizedGeometry;
 
         setProgress(10 + Math.floor((frame / framesTotal) * 80));
-
-        // Recycling now preserves only the already-encoded WebM segments and
-        // the source input. All processed PNGs have already been released.
-        if (segmentIndex > 0 && segmentIndex % 10 === 0 && frameNames.length === 0) {
-            await recycleFFmpeg(segmentIndex, inputName);
-        }
     }
 
     if (await makeWebmPart(frameNames, segmentIndex)) {
