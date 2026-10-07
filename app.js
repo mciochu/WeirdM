@@ -7,6 +7,7 @@ let ffmpeg = createFFmpeg({ log: true });
 let fps = "15";
 let crf = "42";
 let mode = "trim";
+let webmDurations = [];
 
 const filePicker = document.getElementById("filepicker");
 const startBtn = document.querySelector(".button.start");
@@ -58,13 +59,18 @@ const recycleFFmpeg = async () => {
 };
 
 const makeWebmPart = async (inArgs, webmCount) => {
-    if (!inArgs.length) return;
+    if (!inArgs.length) return false;
+
+    const duration = inArgs.length / Number(fps);
+    webmDurations[webmCount] = duration;
 
     let concat = "";
     inArgs.forEach((arg) => {
         concat += `file '${arg}'\n`;
     });
+
     ffmpeg.FS('writeFile', 'concat.txt', Uint8Array.from(concat.split('').map(letter => letter.charCodeAt(0))));
+
     await ffmpeg.run(
         '-y',
         '-f', 'concat',
@@ -82,13 +88,11 @@ const makeWebmPart = async (inArgs, webmCount) => {
     } catch {
         throw new Error(`FFmpeg did not create video chunk ${webmCount}.webm.`);
     }
-    /*
-    inArgs.forEach((arg) => {
-        ffmpeg.FS('unlink', arg);
-    });
-     */
-    // Wipe worker processes every 10 webms to prevent OOM
-    if (webmCount % 10 === 0) await recycleFFmpeg();
+
+    // Wipe worker processes every 10 webms to prevent OOM.
+    if ((webmCount + 1) % 10 === 0) await recycleFFmpeg();
+
+    return true;
 };
 
 function getRandomResize(frame) {
@@ -153,6 +157,7 @@ const makeVideo = async (file) => {
     let lastRes;
     let webmCount = 0;
     let inArgs = [];
+    webmDurations = [];
     for (let frame = 1; frame < framesTotal; frame++) {
         const fn = frame.toString().padStart(6, '0') + '.png';
         const file = ffmpeg.FS('readFile', fn);
@@ -168,28 +173,37 @@ const makeVideo = async (file) => {
         if (!lastRes) lastRes = res;
         if (lastRes !== res) {
             // TODO: Make multi-threaded
-            await makeWebmPart(inArgs, webmCount);
-            webmCount++;
+            if (await makeWebmPart(inArgs, webmCount)) webmCount++;
             lastRes = res;
             inArgs = [];
         }
         setProgress(10 + Math.floor(frame/framesTotal*80));
         inArgs.push(fn);
     }
-    await makeWebmPart(inArgs, webmCount);
-    webmCount++;
+    if (await makeWebmPart(inArgs, webmCount)) webmCount++;
     setProgress(90);
+
+    if (!webmCount) {
+        throw new Error('No WebM segments were generated from the processed frames.');
+    }
+
+    // WeirdM intentionally joins WebM segments with different dimensions.
+    // Keep them as separate encoded streams and use concat demuxer stream-copy.
+    // Explicit durations make FFmpeg handle timestamp boundaries reliably.
     let concat = "";
     for (let i = 0; i < webmCount; i++) {
         concat += `file '${i}.webm'\n`;
+        concat += `duration ${webmDurations[i]}\n`;
     }
+
     ffmpeg.FS('writeFile', 'concat.txt', Uint8Array.from(concat.split('').map(letter => letter.charCodeAt(0))));
 
-    // Stream-copying WebM segments is fragile when FFmpeg generated
-    // segments have slightly different headers/timestamps. Try the fast
-    // copy first, then fall back to a fresh VP8 encode from the same
-    // segments so the final export is reliable.
-    let concatCreated = false;
+    let concatError = "";
+    const previousLogger = ffmpeg.setLogger ? null : null;
+    ffmpeg.setLogger(({ type, message }) => {
+        if (type === "fferr") concatError = message;
+    });
+
     try {
         await ffmpeg.run(
             '-y',
@@ -199,35 +213,14 @@ const makeVideo = async (file) => {
             '-c', 'copy',
             'vid.webm'
         );
+        ffmpeg.setLogger(() => {});
         ffmpeg.FS('readFile', 'vid.webm');
-        concatCreated = true;
     } catch (error) {
-        console.warn('WebM stream-copy concat failed, retrying with re-encode:', error);
-    }
-
-    if (!concatCreated) {
-        try {
-            await ffmpeg.run(
-                '-y',
-                '-f', 'concat',
-                '-safe', '0',
-                '-i', 'concat.txt',
-                '-c:v', 'libvpx',
-                '-pix_fmt', 'yuv420p',
-                '-b:v', '0',
-                '-crf', crf,
-                '-r', fps,
-                'vid.webm'
-            );
-            ffmpeg.FS('readFile', 'vid.webm');
-            concatCreated = true;
-        } catch (error) {
-            console.error('WebM re-encode concat failed:', error);
-        }
-    }
-
-    if (!concatCreated) {
-        throw new Error('FFmpeg could not join the processed WebM segments.');
+        ffmpeg.setLogger(() => {});
+        throw new Error(
+            'FFmpeg could not join the processed WebM segments.' +
+            (concatError ? ` ${concatError}` : "")
+        );
     }
 
     setProgress(95);
