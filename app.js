@@ -349,20 +349,62 @@ const detectInputFps = async (inputName) => {
 };
 
 const waitForVideoEvent = (video, eventName, timeoutMs = 15000) => new Promise((resolve, reject) => {
-    const onEvent = () => cleanup(resolve);
-    const onError = () => cleanup(reject, new Error(`Browser video decoder emitted an error while waiting for ${eventName}.`));
-    const timer = setTimeout(() => cleanup(reject, new Error(`Timed out waiting for browser video event "${eventName}".`)), timeoutMs);
+    const readyStateForEvent = {
+        loadedmetadata: HTMLMediaElement.HAVE_METADATA,
+        loadeddata: HTMLMediaElement.HAVE_CURRENT_DATA,
+    }[eventName];
 
-    const cleanup = (callback, value) => {
-        clearTimeout(timer);
+    if (readyStateForEvent !== undefined && video.readyState >= readyStateForEvent) {
+        resolve();
+        return;
+    }
+
+    let timer = null;
+
+    const cleanup = () => {
+        if (timer) clearTimeout(timer);
         video.removeEventListener(eventName, onEvent);
         video.removeEventListener("error", onError);
-        callback(value);
     };
+
+    const onEvent = () => {
+        cleanup();
+        resolve();
+    };
+
+    const onError = () => {
+        cleanup();
+        reject(new Error(
+            `Browser video decoder emitted an error while waiting for ${eventName}: ` +
+            `${video.error?.message || "unknown media error"}.`
+        ));
+    };
+
+    timer = setTimeout(() => {
+        cleanup();
+        reject(new Error(`Timed out waiting for browser video event "${eventName}".`));
+    }, timeoutMs);
 
     video.addEventListener(eventName, onEvent, { once: true });
     video.addEventListener("error", onError, { once: true });
 });
+
+const seekVideo = async (video, targetTime) => {
+    const safeTarget = Math.min(
+        Math.max(0, targetTime),
+        Math.max(0, video.duration - 0.001)
+    );
+
+    if (Math.abs(video.currentTime - safeTarget) < 0.0005 && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+        return;
+    }
+
+    const seekPromise = waitForVideoEvent(video, "seeked", 15000);
+    video.currentTime = safeTarget;
+
+    await seekPromise;
+    await waitForVideoEvent(video, "loadeddata", 15000);
+};
 
 const canvasToPngBytes = (canvas) => new Promise((resolve, reject) => {
     canvas.toBlob(async (blob) => {
@@ -430,6 +472,7 @@ const extractFramesWithBrowser = async (file) => {
         }, "INPUT");
 
         video.pause();
+        addLog("Browser seek-based frame extraction initialized.", "INFO");
 
         for (let index = 0; index < totalFrames; index++) {
             throwIfCancelled();
@@ -439,8 +482,7 @@ const extractFramesWithBrowser = async (file) => {
                 Math.max(0, video.duration - 0.001)
             );
 
-            video.currentTime = targetTime;
-            await waitForVideoEvent(video, "seeked");
+            await seekVideo(video, targetTime);
 
             context.drawImage(video, 0, 0, width, height);
 
