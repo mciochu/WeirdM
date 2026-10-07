@@ -803,5 +803,9 @@ document.querySelectorAll('input[name="mode"]').forEach((radio) => {
     radio.addEventListener("change", syncModeOptions);
 });
 
+
+document.getElementById("copy-logs").addEventListener("click", copyLogs);
+document.getElementById("download-logs").addEventListener("click", downloadLogs);
+
 syncModeOptions();
 setControls(false);
