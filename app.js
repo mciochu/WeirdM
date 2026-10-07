@@ -25,8 +25,8 @@ const setStatus = (message = "", isError = false) => {
 const setProgress = (percentage) => {
     if (percentage >= 0) {
         const safePercentage = Math.max(0, Math.min(100, percentage));
-        startBtn.textContent = \`Processing (\${safePercentage}%)...\`;
-        startBtn.style.background = \`linear-gradient(to right, #2d7d46 \${safePercentage}%, #4f545c \${safePercentage}%)\`;
+        startBtn.textContent = `Processing (${safePercentage}%)...`;
+        startBtn.style.background = `linear-gradient(to right, #2d7d46 ${safePercentage}%, #4f545c ${safePercentage}%)`;
     } else {
         startBtn.textContent = "Process";
         startBtn.style.background = "";
@@ -70,7 +70,7 @@ const syncModeOptions = () => {
     mode = getMode();
 
     for (const candidate of MODES) {
-        const options = document.getElementById(\`\${candidate}-options\`);
+        const options = document.getElementById(`${candidate}-options`);
         options.hidden = candidate !== mode;
     }
 };
@@ -84,7 +84,7 @@ const getRandomResize = (frame) => {
     const horizontal = doH ? clamp(Math.ceil(Math.random() * 100), 2, 100) : 100;
     const vertical = doV ? clamp(Math.ceil(Math.random() * 100), 2, 100) : 100;
 
-    return \`\${horizontal}%x\${vertical}%\`;
+    return `${horizontal}%x${vertical}%`;
 };
 
 const getBounceResize = (frame) => {
@@ -105,7 +105,7 @@ const getBounceResize = (frame) => {
     const horizontal = clamp(Math.ceil(funcs[hStyle](speedH)), 2, 100);
     const vertical = clamp(Math.ceil(funcs[vStyle](speedV)), 2, 100);
 
-    return \`\${horizontal}%x\${vertical}%\`;
+    return `${horizontal}%x${vertical}%`;
 };
 
 const getInputExtension = (file) => {
@@ -149,12 +149,12 @@ const unlinkQuietly = (name) => {
 const assertOutputFile = (name, label) => {
     const data = readFile(name);
     if (!data || !data.length) {
-        throw new Error(\`\${label} was not created by FFmpeg.\`);
+        throw new Error(`${label} was not created by FFmpeg.`);
     }
 
     // WebM/Matroska files start with the EBML header.
     if (name.endsWith(".webm") && (data[0] !== 0x1a || data[1] !== 0x45 || data[2] !== 0xdf || data[3] !== 0xa3)) {
-        throw new Error(\`\${label} was created, but it is not a valid WebM file.\`);
+        throw new Error(`${label} was created, but it is not a valid WebM file.`);
     }
 
     return data;
@@ -209,7 +209,7 @@ const recycleFFmpeg = async (segmentCount, inputName) => {
     const preservedNames = [inputName];
 
     for (let i = 0; i < segmentCount; i++) {
-        preservedNames.push(\`\${i}.webm\`);
+        preservedNames.push(`${i}.webm`);
     }
 
     const preservedFiles = [];
@@ -236,7 +236,7 @@ const recycleFFmpeg = async (segmentCount, inputName) => {
 const makeWebmPart = async (frameNames, segmentIndex) => {
     if (!frameNames.length) return false;
 
-    const concat = frameNames.map((name) => \`file '\${name}'\`).join("\n") + "\n";
+    const concat = frameNames.map((name) => `file '${name}'`).join("\n") + "\n";
     writeTextFile("frames-concat.txt", concat);
 
     await runFFmpeg(
@@ -245,7 +245,7 @@ const makeWebmPart = async (frameNames, segmentIndex) => {
         "-safe", "0",
         "-i", "frames-concat.txt",
         "-an",
-        "-vf", \`scale=ceil(iw/2)*2:ceil(ih/2)*2,settb=AVTB,setpts=N/\${fps}/TB,fps=\${fps}\`,
+        "-vf", `scale=ceil(iw/2)*2:ceil(ih/2)*2,settb=AVTB,setpts=N/${fps}/TB,fps=${fps}`,
         "-c:v", "libvpx",
         "-pix_fmt", "yuv420p",
         "-crf", String(crf),
@@ -253,7 +253,7 @@ const makeWebmPart = async (frameNames, segmentIndex) => {
         segmentIndex + ".webm"
     );
 
-    assertOutputFile(segmentIndex + ".webm", \`Video segment \${segmentIndex}.webm\`);
+    assertOutputFile(segmentIndex + ".webm", `Video segment ${segmentIndex}.webm`);
     generatedSegments.push(segmentIndex);
 
     // PNGs are no longer needed after the segment has been encoded.
@@ -272,7 +272,7 @@ const joinWebmSegments = async (segmentCount) => {
     // at segment boundaries.
     const concat = Array.from(
         { length: segmentCount },
-        (_, index) => \`file \${index}.webm\`
+        (_, index) => `file ${index}.webm`
     ).join("\n") + "\n";
 
     writeTextFile("segments-concat.txt", concat);
@@ -297,7 +297,7 @@ const joinWebmSegments = async (segmentCount) => {
         const detail = log.trim().split("\n").slice(-3).join(" ");
         throw new Error(
             "FFmpeg could not join the processed WebM segments." +
-            (detail ? \` \${detail}\` : "")
+            (detail ? ` ${detail}` : "")
         );
     } finally {
         ffmpeg.setLogger(() => {});
@@ -334,7 +334,7 @@ const muxAudio = async (inputName) => {
 
             return assertOutputFile("out.webm", "Final WebM");
         } catch (error) {
-            console.warn(\`Audio mux attempt \${attempt.codec} failed:\`, error);
+            console.warn(`Audio mux attempt ${attempt.codec} failed:`, error);
             unlinkQuietly("out.webm");
         }
     }
@@ -358,7 +358,7 @@ const cleanupWorkspace = (inputName) => {
     unlinkQuietly("out.webm");
 
     generatedSegments.forEach((index) => {
-        unlinkQuietly(\`\${index}.webm\`);
+        unlinkQuietly(`${index}.webm`);
     });
 
     generatedSegments = [];
@@ -371,7 +371,7 @@ const makeVideo = async (file) => {
     generatedSegments = [];
 
     const extension = getInputExtension(file);
-    const inputName = \`input.\${extension}\`;
+    const inputName = `input.${extension}`;
     const outputName = sanitizeDownloadName(file.name);
 
     setProgress(0);
@@ -386,7 +386,7 @@ const makeVideo = async (file) => {
     setStatus("Reading video information…");
     await detectInputFps(inputName);
 
-    setStatus(\`Extracting frames at about \${fps} FPS…\`);
+    setStatus(`Extracting frames at about ${fps} FPS…`);
     await runFFmpeg(
         "-y",
         "-i", inputName,
@@ -409,7 +409,7 @@ const makeVideo = async (file) => {
     }
 
     setProgress(10);
-    setStatus(\`Processing \${framesTotal} frames…\`);
+    setStatus(`Processing ${framesTotal} frames…`);
 
     let lastGeometry = null;
     let segmentIndex = 0;
@@ -422,7 +422,7 @@ const makeVideo = async (file) => {
         const inputFrame = readFile(frameName);
 
         if (!inputFrame) {
-            throw new Error(\`Missing decoded frame \${frameName}.\`);
+            throw new Error(`Missing decoded frame ${frameName}.`);
         }
 
         const args = {
@@ -457,22 +457,22 @@ const makeVideo = async (file) => {
         );
 
         if (!result || !result.length || !result[0].buffer) {
-            throw new Error(\`ImageMagick did not return processed frame \${frame}.\`);
+            throw new Error(`ImageMagick did not return processed frame ${frame}.`);
         }
 
         const geometry = String(result[0].name || "").match(/(\d+)x(\d+)/);
         if (!geometry) {
-            throw new Error(\`ImageMagick returned an invalid size for frame \${frame}.\`);
+            throw new Error(`ImageMagick returned an invalid size for frame ${frame}.`);
         }
 
         const width = Number(geometry[1]);
         const height = Number(geometry[2]);
 
         if (width < 1 || height < 1) {
-            throw new Error(\`Frame \${frame} produced an empty image.\`);
+            throw new Error(`Frame ${frame} produced an empty image.`);
         }
 
-        const normalizedGeometry = \`\${width}x\${height}\`;
+        const normalizedGeometry = `${width}x${height}`;
         ffmpeg.FS("writeFile", frameName, result[0].buffer);
 
         if (lastGeometry !== null && lastGeometry !== normalizedGeometry) {
@@ -558,7 +558,7 @@ startBtn.addEventListener("click", async () => {
         }
     } finally {
         try {
-            const inputName = file ? \`input.\${getInputExtension(file)}\` : null;
+            const inputName = file ? `input.${getInputExtension(file)}` : null;
             if (ffmpeg && inputName) cleanupWorkspace(inputName);
         } catch (cleanupError) {
             console.warn("Cleanup failed:", cleanupError);
