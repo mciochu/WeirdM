@@ -1,336 +1,596 @@
-// Cross-Origin-Embedder-Policy: require-corp
-// Cross-Origin-Opener-Policy: same-origin
-
 const { createFFmpeg } = FFmpeg;
 
-let ffmpeg = createFFmpeg({ log: true });
-let fps = "15";
-let crf = "42";
-let mode = "trim";
-let webmDurations = [];
+const MODES = ["bounce", "random", "trim"];
+const DEFAULT_FPS = 15;
+const DEFAULT_CRF = 42;
+
+let ffmpeg = null;
+let fps = DEFAULT_FPS;
+let crf = DEFAULT_CRF;
+let mode = "bounce";
+let processing = false;
+let cancelRequested = false;
+let generatedSegments = [];
 
 const filePicker = document.getElementById("filepicker");
 const startBtn = document.querySelector(".button.start");
+const cancelBtn = document.querySelector(".button.cancel");
+const statusEl = document.getElementById("status");
+
+const setStatus = (message = "", isError = false) => {
+    statusEl.textContent = message;
+    statusEl.classList.toggle("error", isError);
+};
 
 const setProgress = (percentage) => {
     if (percentage >= 0) {
-        startBtn.innerText = `Processing (${percentage}%)...`;
-        startBtn.style.background = `linear-gradient(to right, #2d7d46 ${percentage - 1}%, #4f545c ${percentage}%, #4f545c)`;
+        const safePercentage = Math.max(0, Math.min(100, percentage));
+        startBtn.textContent = \`Processing (\${safePercentage}%)...\`;
+        startBtn.style.background = \`linear-gradient(to right, #2d7d46 \${safePercentage}%, #4f545c \${safePercentage}%)\`;
     } else {
-        startBtn.style.background = null;
-    }
-}
-
-const recycleFFmpeg = async () => {
-    let files = [];
-    files.push(['input.avi', ffmpeg.FS('readFile', 'input.avi')]);
-    ffmpeg.FS('unlink', 'input.avi')
-    let i = 0;
-    while (true) {
-        i++;
-        const fn = i.toString().padStart(6, '0') + '.png';
-        try {
-            files.push([fn, ffmpeg.FS('readFile', fn)]);
-            ffmpeg.FS('unlink', fn);
-        } catch {
-            break;
-        }
-    }
-    i = 0;
-    while (true) {
-        const fn = i.toString() + '.webm';
-        try {
-            files.push([fn, ffmpeg.FS('readFile', fn)]);
-            ffmpeg.FS('unlink', fn);
-        } catch {
-            break;
-        }
-        i++;
-    }
-    try {
-        ffmpeg.exit();
-    } catch {}
-    ffmpeg = createFFmpeg({ log: true });
-    if (!ffmpeg.isLoaded()) await ffmpeg.load();
-    for (i = 0; i < files.length; ++i) {
-        ffmpeg.FS('writeFile', files[i][0], files[i][1]);
-        files[i][1] = null;
+        startBtn.textContent = "Process";
+        startBtn.style.background = "";
     }
 };
 
-const makeWebmPart = async (inArgs, webmCount) => {
-    if (!inArgs.length) return false;
+const setControls = (running) => {
+    processing = running;
+    startBtn.disabled = running;
+    cancelBtn.disabled = !running;
+    filePicker.disabled = running;
 
-    const duration = inArgs.length / Number(fps);
-    webmDurations[webmCount] = duration;
+    document.querySelectorAll('input[name="mode"], select, input[type="number"], input[type="checkbox"]')
+        .forEach((element) => {
+            element.disabled = running;
+        });
+};
 
-    let concat = "";
-    inArgs.forEach((arg) => {
-        concat += `file '${arg}'\n`;
-    });
+const throwIfCancelled = () => {
+    if (cancelRequested) {
+        throw new Error("Processing cancelled.");
+    }
+};
 
-    ffmpeg.FS('writeFile', 'concat.txt', Uint8Array.from(concat.split('').map(letter => letter.charCodeAt(0))));
+const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
-    await ffmpeg.run(
-        '-y',
-        '-f', 'concat',
-        '-safe', '0',
-        '-i', 'concat.txt',
-        '-vf', `settb=AVTB,setpts=N/${fps}/TB,fps=${fps}`,
-        '-pix_fmt', 'yuv420p',
-        '-crf', crf,
-        '-r', fps,
-        webmCount + '.webm'
-    );
+const getNumericValue = (id, fallback, min, max) => {
+    const value = Number(document.getElementById(id).value);
+    if (!Number.isFinite(value)) return fallback;
+    return clamp(value, min, max);
+};
 
+const getMode = () => {
+    for (const candidate of MODES) {
+        if (document.getElementById(candidate).checked) return candidate;
+    }
+    return "bounce";
+};
+
+const syncModeOptions = () => {
+    mode = getMode();
+
+    for (const candidate of MODES) {
+        const options = document.getElementById(\`\${candidate}-options\`);
+        options.hidden = candidate !== mode;
+    }
+};
+
+const getRandomResize = (frame) => {
+    if (frame === 1) return "100%x100%";
+
+    const doH = document.getElementById("random-h").checked;
+    const doV = document.getElementById("random-v").checked;
+
+    const horizontal = doH ? clamp(Math.ceil(Math.random() * 100), 2, 100) : 100;
+    const vertical = doV ? clamp(Math.ceil(Math.random() * 100), 2, 100) : 100;
+
+    return \`\${horizontal}%x\${vertical}%\`;
+};
+
+const getBounceResize = (frame) => {
+    if (frame === 1) return "100%x100%";
+
+    const speedH = getNumericValue("bounce-h-speed", 10, 1, 50);
+    const speedV = getNumericValue("bounce-v-speed", 10, 1, 50);
+
+    const funcs = {
+        none: () => 100,
+        sin: (speed) => (Math.sin(frame * speed / fps) + 1) * 50,
+        cos: (speed) => (Math.cos(frame * speed / fps) + 1) * 50,
+    };
+
+    const hStyle = document.getElementById("bounce-h-style").value;
+    const vStyle = document.getElementById("bounce-v-style").value;
+
+    const horizontal = clamp(Math.ceil(funcs[hStyle](speedH)), 2, 100);
+    const vertical = clamp(Math.ceil(funcs[vStyle](speedV)), 2, 100);
+
+    return \`\${horizontal}%x\${vertical}%\`;
+};
+
+const getInputExtension = (file) => {
+    const match = file.name.match(/\.([a-z0-9]+)$/i);
+    return match ? match[1].toLowerCase() : "bin";
+};
+
+const sanitizeDownloadName = (name) => {
+    const withoutExtension = name.replace(/\.[^/.]+$/, "");
+    const safe = withoutExtension.replace(/[^a-z0-9._-]+/gi, "_").replace(/^_+|_+$/g, "");
+    return (safe || "video") + "_weirdm.webm";
+};
+
+const writeTextFile = (name, text) => {
+    ffmpeg.FS("writeFile", name, new TextEncoder().encode(text));
+};
+
+const fileExists = (name) => {
     try {
-        ffmpeg.FS('readFile', webmCount + '.webm');
+        ffmpeg.FS("readFile", name);
+        return true;
     } catch {
-        throw new Error(`FFmpeg did not create video chunk ${webmCount}.webm.`);
+        return false;
+    }
+};
+
+const readFile = (name) => {
+    try {
+        return ffmpeg.FS("readFile", name);
+    } catch {
+        return null;
+    }
+};
+
+const unlinkQuietly = (name) => {
+    try {
+        ffmpeg.FS("unlink", name);
+    } catch {}
+};
+
+const assertOutputFile = (name, label) => {
+    const data = readFile(name);
+    if (!data || !data.length) {
+        throw new Error(\`\${label} was not created by FFmpeg.\`);
     }
 
-    // Wipe worker processes every 10 webms to prevent OOM.
-    if ((webmCount + 1) % 10 === 0) await recycleFFmpeg();
+    // WebM/Matroska files start with the EBML header.
+    if (name.endsWith(".webm") && (data[0] !== 0x1a || data[1] !== 0x45 || data[2] !== 0xdf || data[3] !== 0xa3)) {
+        throw new Error(\`\${label} was created, but it is not a valid WebM file.\`);
+    }
+
+    return data;
+};
+
+const createFFmpegInstance = async () => {
+    ffmpeg = createFFmpeg({ log: true });
+    await ffmpeg.load();
+};
+
+const runFFmpeg = async (...args) => {
+    throwIfCancelled();
+    await ffmpeg.run(...args);
+    throwIfCancelled();
+};
+
+const detectInputFps = async (inputName) => {
+    let detectedFps = null;
+
+    ffmpeg.setLogger(({ type, message }) => {
+        if (type !== "fferr") return;
+
+        const match = String(message).match(/(\d+(?:\.\d+)?)\s+fps\b/);
+        if (!detectedFps && match) {
+            detectedFps = Number(match[1]);
+        }
+    });
+
+    try {
+        // This is a real probe command. Running only "-i input" is invalid
+        // and was the original cause of the 5% failure.
+        await runFFmpeg(
+            "-y",
+            "-i", inputName,
+            "-map", "0:v:0",
+            "-frames:v", "1",
+            "-f", "null",
+            "-"
+        );
+    } finally {
+        ffmpeg.setLogger(() => {});
+    }
+
+    if (Number.isFinite(detectedFps) && detectedFps > 0) {
+        fps = detectedFps;
+    } else {
+        fps = DEFAULT_FPS;
+    }
+};
+
+const recycleFFmpeg = async (segmentCount, inputName) => {
+    const preservedNames = [inputName];
+
+    for (let i = 0; i < segmentCount; i++) {
+        preservedNames.push(\`\${i}.webm\`);
+    }
+
+    const preservedFiles = [];
+
+    for (const name of preservedNames) {
+        const data = readFile(name);
+        if (data) {
+            preservedFiles.push([name, data]);
+            unlinkQuietly(name);
+        }
+    }
+
+    try {
+        ffmpeg.exit();
+    } catch {}
+
+    await createFFmpegInstance();
+
+    for (const [name, data] of preservedFiles) {
+        ffmpeg.FS("writeFile", name, data);
+    }
+};
+
+const makeWebmPart = async (frameNames, segmentIndex) => {
+    if (!frameNames.length) return false;
+
+    const concat = frameNames.map((name) => \`file '\${name}'\`).join("\n") + "\n";
+    writeTextFile("frames-concat.txt", concat);
+
+    await runFFmpeg(
+        "-y",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", "frames-concat.txt",
+        "-an",
+        "-vf", \`scale=ceil(iw/2)*2:ceil(ih/2)*2,settb=AVTB,setpts=N/\${fps}/TB,fps=\${fps}\`,
+        "-c:v", "libvpx",
+        "-pix_fmt", "yuv420p",
+        "-crf", String(crf),
+        "-b:v", "0",
+        segmentIndex + ".webm"
+    );
+
+    assertOutputFile(segmentIndex + ".webm", \`Video segment \${segmentIndex}.webm\`);
+    generatedSegments.push(segmentIndex);
+
+    // PNGs are no longer needed after the segment has been encoded.
+    // The original project kept them around, which made long videos
+    // unnecessarily memory-hungry.
+    frameNames.forEach(unlinkQuietly);
+    unlinkQuietly("frames-concat.txt");
 
     return true;
 };
 
-function getRandomResize(frame) {
-    if (frame === 1) return "100%x100%";
-    const doH = document.getElementById("random-h").checked;
-    const doV = document.getElementById("random-v").checked;
-    return `${doH ? Math.ceil(Math.random()*100) : 100}%x${doV ? Math.ceil(Math.random()*100) : 100}%`;
-}
+const joinWebmSegments = async (segmentCount) => {
+    // Do not add "duration" lines here. The original WebM technique relies
+    // on the concat demuxer preserving each VP8 segment, including its own
+    // resolution. The resulting Matroska/WebM stream can change dimensions
+    // at segment boundaries.
+    const concat = Array.from(
+        { length: segmentCount },
+        (_, index) => \`file \${index}.webm\`
+    ).join("\n") + "\n";
 
-function getBounceResize(frame) {
-    if (frame === 1) return "100%x100%";
-    const funcs = {
-        none: (s) => 100,
-        sin: (s) => Math.ceil((Math.sin(frame*s/Number(fps))+1)*50),
-        cos: (s) => Math.ceil((Math.cos(frame*s/Number(fps))+1)*50),
-    };
-    let h = funcs[document.getElementById("bounce-h-style").value](document.getElementById("bounce-h-speed").value);
-    let v = funcs[document.getElementById("bounce-v-style").value](document.getElementById("bounce-v-speed").value);
-    return `${h}%x${v}%`;
-}
+    writeTextFile("segments-concat.txt", concat);
 
-const makeVideo = async (file) => {
-    setProgress(0);
-    if (!ffmpeg.isLoaded()) await ffmpeg.load();
-    setProgress(5);
-    ffmpeg.FS('writeFile', 'input.avi', file);
-
-    // Probe the input with a real FFmpeg command. The old code ran
-    // "ffmpeg -i input.avi" without an output, which is not a valid
-    // conversion command and caused processing to stop at 5%.
-    let detectedFps = null;
+    let log = "";
     ffmpeg.setLogger(({ type, message }) => {
-        if (type !== "fferr") return;
-        const match = message.match(/(\d+(?:\.\d+)?)\s+fps\b/);
-        if (match) detectedFps = match[1];
-    });
-    await ffmpeg.run(
-        '-y',
-        '-i', 'input.avi',
-        '-map', '0:v:0',
-        '-frames:v', '1',
-        '-f', 'null',
-        '-'
-    );
-    ffmpeg.setLogger(() => {});
-    if (detectedFps) fps = detectedFps;
-    console.log("Frame rate is " + fps);
-    await ffmpeg.run('-y', '-i', 'input.avi', '%06d.png');
-    setProgress(10);
-    let framesTotal = 0;
-    while (true) {
-        framesTotal++;
-        const fn = framesTotal.toString().padStart(6, '0') + '.png';
-        let file;
-        try {
-            file = ffmpeg.FS('readFile', fn);
-        } catch {
-            break;
-        }
-    }
-
-    let lastRes;
-    let webmCount = 0;
-    let inArgs = [];
-    webmDurations = [];
-    for (let frame = 1; frame < framesTotal; frame++) {
-        const fn = frame.toString().padStart(6, '0') + '.png';
-        const file = ffmpeg.FS('readFile', fn);
-
-        const args = {
-            trim: ["convert", "in.png", "-trim", "-shave", "1x1", "+repage", "-set", "filename:mysize", "%wx%h", "%[filename:mysize]"],
-            bounce: ["convert", "in.png", "-resize", getBounceResize(frame), "-set", "filename:mysize", "%wx%h", "%[filename:mysize]"],
-            random: ["convert", "in.png", "-resize", getRandomResize(frame), "-set", "filename:mysize", "%wx%h", "%[filename:mysize]"],
-        }[mode];
-        const out = await Magick.Call([{ 'name': 'in.png', 'content': file }], args);
-        const res = out[0].name;
-        ffmpeg.FS('writeFile', fn, out[0].buffer);
-        if (!lastRes) lastRes = res;
-        if (lastRes !== res) {
-            // TODO: Make multi-threaded
-            if (await makeWebmPart(inArgs, webmCount)) webmCount++;
-            lastRes = res;
-            inArgs = [];
-        }
-        setProgress(10 + Math.floor(frame/framesTotal*80));
-        inArgs.push(fn);
-    }
-    if (await makeWebmPart(inArgs, webmCount)) webmCount++;
-    setProgress(90);
-
-    if (!webmCount) {
-        throw new Error('No WebM segments were generated from the processed frames.');
-    }
-
-    // WeirdM intentionally joins WebM segments with different dimensions.
-    // Keep them as separate encoded streams and use concat demuxer stream-copy.
-    // Explicit durations make FFmpeg handle timestamp boundaries reliably.
-    let concat = "";
-    for (let i = 0; i < webmCount; i++) {
-        concat += `file '${i}.webm'\n`;
-        concat += `duration ${webmDurations[i]}\n`;
-    }
-
-    ffmpeg.FS('writeFile', 'concat.txt', Uint8Array.from(concat.split('').map(letter => letter.charCodeAt(0))));
-
-    let concatError = "";
-    const previousLogger = ffmpeg.setLogger ? null : null;
-    ffmpeg.setLogger(({ type, message }) => {
-        if (type === "fferr") concatError = message;
+        if (type === "fferr") log += String(message) + "\n";
     });
 
     try {
-        await ffmpeg.run(
-            '-y',
-            '-f', 'concat',
-            '-safe', '0',
-            '-i', 'concat.txt',
-            '-c', 'copy',
-            'vid.webm'
+        await runFFmpeg(
+            "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", "segments-concat.txt",
+            "-map", "0:v:0",
+            "-c", "copy",
+            "-f", "webm",
+            "vid.webm"
         );
-        ffmpeg.setLogger(() => {});
-        ffmpeg.FS('readFile', 'vid.webm');
     } catch (error) {
-        ffmpeg.setLogger(() => {});
+        const detail = log.trim().split("\n").slice(-3).join(" ");
         throw new Error(
-            'FFmpeg could not join the processed WebM segments.' +
-            (concatError ? ` ${concatError}` : "")
+            "FFmpeg could not join the processed WebM segments." +
+            (detail ? \` \${detail}\` : "")
         );
+    } finally {
+        ffmpeg.setLogger(() => {});
     }
 
-    setProgress(95);
+    return assertOutputFile("vid.webm", "Joined WebM");
+};
 
-    // The original final remux could fail when the AVI audio codec was not
-    // directly compatible with WebM. Prefer Opus, then Vorbis, and finally
-    // fall back to the processed video-only WebM so the export never dies
-    // merely because the source audio cannot be muxed.
-    const audioEncodings = [
-        ['libopus', '-b:a', '96k'],
-        ['libvorbis', '-q:a', '4'],
+const muxAudio = async (inputName) => {
+    unlinkQuietly("out.webm");
+
+    // First preserve an already WebM-compatible audio stream without
+    // re-encoding. If that is not possible, encode to Opus/Vorbis.
+    const attempts = [
+        { codec: "copy", args: [] },
+        { codec: "libopus", args: ["-b:a", "96k"] },
+        { codec: "libvorbis", args: ["-q:a", "4"] },
     ];
 
-    let finalCreated = false;
-    for (const [audioCodec, ...audioArgs] of audioEncodings) {
+    for (const attempt of attempts) {
         try {
-            await ffmpeg.run(
-                '-y',
-                '-i', 'vid.webm',
-                '-i', 'input.avi',
-                '-map', '0:v:0',
-                '-map', '1:a:0?',
-                '-c:v', 'copy',
-                '-c:a', audioCodec,
-                ...audioArgs,
-                '-shortest',
-                '-metadata', 'title=WeirdM',
-                'out.webm'
+            await runFFmpeg(
+                "-y",
+                "-i", "vid.webm",
+                "-i", inputName,
+                "-map", "0:v:0",
+                "-map", "1:a:0?",
+                "-c:v", "copy",
+                "-c:a", attempt.codec,
+                ...attempt.args,
+                "-metadata", "title=WeirdM",
+                "out.webm"
             );
-            ffmpeg.FS('readFile', 'out.webm');
-            finalCreated = true;
-            break;
+
+            return assertOutputFile("out.webm", "Final WebM");
         } catch (error) {
-            console.warn(`Audio mux with ${audioCodec} failed:`, error);
+            console.warn(\`Audio mux attempt \${attempt.codec} failed:\`, error);
+            unlinkQuietly("out.webm");
         }
     }
 
-    if (!finalCreated) {
-        // A video-only export is still a valid WeirdM result.
-        ffmpeg.FS('writeFile', 'out.webm', ffmpeg.FS('readFile', 'vid.webm'));
+    // Audio is optional for WeirdM. A video-only result is still a valid
+    // export when the source audio cannot be represented in WebM.
+    const videoOnly = readFile("vid.webm");
+    if (!videoOnly) {
+        throw new Error("Final video exists neither with nor without audio.");
     }
 
-    setProgress(100);
-    return ffmpeg.FS('readFile', 'out.webm');
-
+    ffmpeg.FS("writeFile", "out.webm", videoOnly);
+    return assertOutputFile("out.webm", "Final video-only WebM");
 };
 
-const modes = ["bounce", "random", "trim"];
-const getMode = () => {
-    for (let m of modes) {
-        if (document.getElementById(m).checked) return m;
+const cleanupWorkspace = (inputName) => {
+    unlinkQuietly(inputName);
+    unlinkQuietly("frames-concat.txt");
+    unlinkQuietly("segments-concat.txt");
+    unlinkQuietly("vid.webm");
+    unlinkQuietly("out.webm");
+
+    generatedSegments.forEach((index) => {
+        unlinkQuietly(\`\${index}.webm\`);
+    });
+
+    generatedSegments = [];
+};
+
+const makeVideo = async (file) => {
+    fps = DEFAULT_FPS;
+    crf = clamp(Math.round(getNumericValue("crf", DEFAULT_CRF, 0, 63)), 0, 63);
+    mode = getMode();
+    generatedSegments = [];
+
+    const extension = getInputExtension(file);
+    const inputName = \`input.\${extension}\`;
+    const outputName = sanitizeDownloadName(file.name);
+
+    setProgress(0);
+    setStatus("Loading video engine…");
+
+    await createFFmpegInstance();
+    throwIfCancelled();
+
+    setProgress(5);
+    ffmpeg.FS("writeFile", inputName, new Uint8Array(await file.arrayBuffer()));
+
+    setStatus("Reading video information…");
+    await detectInputFps(inputName);
+
+    setStatus(\`Extracting frames at about \${fps} FPS…\`);
+    await runFFmpeg(
+        "-y",
+        "-i", inputName,
+        "-map", "0:v:0",
+        "%06d.png"
+    );
+
+    let framesTotal = 0;
+    while (true) {
+        const frameName = String(framesTotal + 1).padStart(6, "0") + ".png";
+        const data = readFile(frameName);
+
+        if (!data) break;
+
+        framesTotal++;
     }
-    return "err";
-}
 
-// Yes, it's a weird way of doing this, but radio buttons suck
-document.onclick = () => {
-    for (let m of modes) {
-        document.getElementById(`${m}-options`).style.display = document.getElementById(m).checked ? "block" : "none";
+    if (!framesTotal) {
+        throw new Error("FFmpeg decoded no video frames.");
     }
-}
 
-startBtn.onclick = () => {
-    if (!filePicker.files?.length) return alert("Pick a file first!");
-    const reader = new FileReader();
-    const filename = filePicker.files[0].name.replace(/\.[^/.]+$/, "_weirdm.webm");
-    reader.onload = function() {
-        const array = new Uint8Array(this.result);
-        mode = getMode();
-        crf = document.getElementById("crf").value;
-        makeVideo(array)
-            .then((final) => {
-                downloadBlob(final, filename);
-            })
-            .catch((error) => {
-                console.error("WeirdM processing failed:", error);
-                const message = error instanceof Error ? error.message : String(error);
-                alert("Processing failed. Please try another video.\\n\\n" + message);
-            })
-            .finally(() => {
-                startBtn.disabled = false;
-                startBtn.innerText = "Go!";
-                setProgress(-1);
-                try {
-                    ffmpeg.exit();
-                } catch {}
-            });
+    setProgress(10);
+    setStatus(\`Processing \${framesTotal} frames…\`);
+
+    let lastGeometry = null;
+    let segmentIndex = 0;
+    let frameNames = [];
+
+    for (let frame = 1; frame <= framesTotal; frame++) {
+        throwIfCancelled();
+
+        const frameName = String(frame).padStart(6, "0") + ".png";
+        const inputFrame = readFile(frameName);
+
+        if (!inputFrame) {
+            throw new Error(\`Missing decoded frame \${frameName}.\`);
+        }
+
+        const args = {
+            trim: [
+                "convert",
+                "in.png",
+                "-trim",
+                "-shave", "1x1",
+                "+repage",
+                "-set", "filename:mysize", "%wx%h",
+                "%[filename:mysize]"
+            ],
+            bounce: [
+                "convert",
+                "in.png",
+                "-resize", getBounceResize(frame),
+                "-set", "filename:mysize", "%wx%h",
+                "%[filename:mysize]"
+            ],
+            random: [
+                "convert",
+                "in.png",
+                "-resize", getRandomResize(frame),
+                "-set", "filename:mysize", "%wx%h",
+                "%[filename:mysize]"
+            ],
+        }[mode];
+
+        const result = await Magick.Call(
+            [{ name: "in.png", content: inputFrame }],
+            args
+        );
+
+        if (!result || !result.length || !result[0].buffer) {
+            throw new Error(\`ImageMagick did not return processed frame \${frame}.\`);
+        }
+
+        const geometry = String(result[0].name || "").match(/(\d+)x(\d+)/);
+        if (!geometry) {
+            throw new Error(\`ImageMagick returned an invalid size for frame \${frame}.\`);
+        }
+
+        const width = Number(geometry[1]);
+        const height = Number(geometry[2]);
+
+        if (width < 1 || height < 1) {
+            throw new Error(\`Frame \${frame} produced an empty image.\`);
+        }
+
+        const normalizedGeometry = \`\${width}x\${height}\`;
+        ffmpeg.FS("writeFile", frameName, result[0].buffer);
+
+        if (lastGeometry !== null && lastGeometry !== normalizedGeometry) {
+            if (await makeWebmPart(frameNames, segmentIndex)) {
+                segmentIndex++;
+            }
+            frameNames = [];
+        }
+
+        frameNames.push(frameName);
+        lastGeometry = normalizedGeometry;
+
+        setProgress(10 + Math.floor((frame / framesTotal) * 80));
+
+        // Recycling now preserves only the already-encoded WebM segments and
+        // the source input. All processed PNGs have already been released.
+        if (segmentIndex > 0 && segmentIndex % 10 === 0 && frameNames.length === 0) {
+            await recycleFFmpeg(segmentIndex, inputName);
+        }
     }
-    reader.readAsArrayBuffer(filePicker.files[0]);
-    startBtn.disabled = true;
-    startBtn.innerText = "Processing...";
-}
 
-// https://stackoverflow.com/a/62176999/2251833
-const downloadURL = (data, fileName) => {
-    const a = document.createElement('a')
-    a.href = data
-    a.download = fileName
-    document.body.appendChild(a)
-    a.style.display = 'none'
-    a.click()
-    a.remove()
-}
+    if (await makeWebmPart(frameNames, segmentIndex)) {
+        segmentIndex++;
+    }
 
-const downloadBlob = (data, fileName, mimeType) => {
-    const blob = new Blob([data], {
-        type: mimeType
-    })
-    const url = window.URL.createObjectURL(blob)
-    downloadURL(url, fileName)
-    setTimeout(() => window.URL.revokeObjectURL(url), 1000)
-}
+    if (!segmentIndex) {
+        throw new Error("No WebM segments were generated.");
+    }
 
+    setProgress(90);
+    setStatus("Joining resizing WebM segments…");
+    await joinWebmSegments(segmentIndex);
+
+    setProgress(95);
+    setStatus("Preserving source audio…");
+    const final = await muxAudio(inputName);
+
+    setProgress(100);
+    setStatus("Done. Downloading your WeirdM…");
+
+    const downloadData = new Uint8Array(final);
+    const blob = new Blob([downloadData], { type: "video/webm" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+
+    link.href = url;
+    link.download = outputName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+    return outputName;
+};
+
+startBtn.addEventListener("click", async () => {
+    if (processing) return;
+
+    const file = filePicker.files?.[0];
+    if (!file) {
+        setStatus("Choose a video file first.", true);
+        return;
+    }
+
+    cancelRequested = false;
+    setControls(true);
+    setStatus("Starting…");
+
+    try {
+        await makeVideo(file);
+    } catch (error) {
+        console.error("WeirdM processing failed:", error);
+
+        if (cancelRequested) {
+            setProgress(-1);
+            setStatus("Processing cancelled.");
+        } else {
+            const message = error instanceof Error ? error.message : String(error);
+            setProgress(-1);
+            setStatus(message, true);
+            alert("Processing failed. Please try another video.\n\n" + message);
+        }
+    } finally {
+        try {
+            const inputName = file ? \`input.\${getInputExtension(file)}\` : null;
+            if (ffmpeg && inputName) cleanupWorkspace(inputName);
+        } catch (cleanupError) {
+            console.warn("Cleanup failed:", cleanupError);
+        }
+
+        try {
+            ffmpeg?.exit();
+        } catch {}
+
+        ffmpeg = null;
+        setControls(false);
+
+        if (!cancelRequested && !statusEl.classList.contains("error")) {
+            setProgress(-1);
+        }
+    }
+});
+
+cancelBtn.addEventListener("click", () => {
+    if (!processing) return;
+
+    cancelRequested = true;
+    setStatus("Cancelling…");
+
+    try {
+        ffmpeg?.exit();
+    } catch {}
+});
+
+document.querySelectorAll('input[name="mode"]').forEach((radio) => {
+    radio.addEventListener("change", syncModeOptions);
+});
+
+syncModeOptions();
+setControls(false);
