@@ -1,71 +1,135 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="WeirdM creates WebM videos whose dimensions change during playback.">
     <link rel="icon" type="image/x-icon" href="/favicon.ico">
     <link rel="stylesheet" type="text/css" href="app.css">
-    <script crossorigin="anonymous"
-            src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.10.1/dist/ffmpeg.min.js"></script>
+    <script
+        crossorigin="anonymous"
+        src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.10.1/dist/ffmpeg.min.js"
+    ></script>
     <script type="module">
-        import * as Magick from 'https://cdn.jsdelivr.net/npm/wasm-imagemagick@1.2.8/dist/magickApi.js';
+        import * as Magick from "https://cdn.jsdelivr.net/npm/wasm-imagemagick@1.2.8/dist/magickApi.js";
         window.Magick = Magick;
     </script>
     <title>WeirdM - Resizing WebM maker</title>
-    <meta charset="UTF-8">
 </head>
 <body>
-<h1>WeirdM</h1>
-<div class="container">
-    <h3>About</h3>
-    <p>WeirdM lets you create those weird WebM videos that resize as they play, from simple effects that work with
-        any video to advanced custom animations you can create yourself.</p>
-    <p>The processing happens locally in your browser, so your videos do not get sent to my server.
-        The source code is available on <a href="https://github.com/rebane2001/weirdm">GitHub</a>.</p>
-    <h3>Guide</h3>
-    <p>A video tutorial is available <a href="https://www.youtube.com/watch?v=Wf2filWCcJo">here</a>.</p>
-    <h3>Options</h3>
-    <input type="radio" id="bounce" name="mode" checked>
-    <label for="bounce">Bounce (simple)</label><br>
-    <input type="radio" id="random" name="mode">
-    <label for="random">Random (simple)</label><br>
-    <input type="radio" id="trim" name="mode">
-    <label for="trim">Trim (advanced)</label><br>
-    <br>
-    <div id="bounce-options">
-        <b>Horizontal</b><br>
-        <label for="bounce-h-style">Style:</label>
-        <select id="bounce-h-style">
-            <option value="sin">Sin</option>
-            <option value="cos">Cos</option>
-            <option value="none" selected="selected">None</option>
-        </select><br>
-        <label for="bounce-h-speed">Speed:</label>
-        <input id="bounce-h-speed" type="number" min="1" max="50" value="10"><br>
-        <br>
-        <b>Vertical</b><br>
-        <label for="bounce-v-style">Style:</label>
-        <select id="bounce-v-style">
-            <option value="sin" selected="selected">Sin</option>
-            <option value="cos">Cos</option>
-            <option value="none">None</option>
-        </select><br>
-        <label for="bounce-v-speed">Speed:</label>
-        <input id="bounce-v-speed" type="number" min="1" max="50" value="10"><br>
-    </div>
-    <div id="random-options" style="display: none">
-        <input type="checkbox" id="random-h" checked>
-        <label for="random-h">Horizontal</label><br>
-        <input type="checkbox" id="random-v" checked>
-        <label for="random-v">Vertical</label><br>
-    </div>
-    <div id="trim-options" style="display: none">
-        <p>Trim removes a solid color or transparency from all 4 borders of your video. Please check out the guide for more info.</p>
-    </div>
-    <br><label for="crf">CRF (quality, lower is better):</label>
-    <input id="crf" type="number" min="0" max="63" value="42"><br>
-    <h3>Pick a file</h3>
-    <input type="file" id="filepicker"/><br><br>
-    <button class="button start">Go!</button>
-</div>
+<main class="container">
+    <h1>WeirdM</h1>
+
+    <section class="card" aria-labelledby="about-title">
+        <h2 id="about-title">About</h2>
+        <p>
+            WeirdM turns a normal video into a WebM whose dimensions can change while it plays.
+            Processing happens locally in your browser; your video is not uploaded to a server.
+        </p>
+        <p>
+            Source code:
+            <a href="https://github.com/mciochu/WeirdM" rel="noopener noreferrer">GitHub</a>.
+        </p>
+    </section>
+
+    <section class="card" aria-labelledby="guide-title">
+        <h2 id="guide-title">Guide</h2>
+        <p>
+            <a href="https://www.youtube.com/watch?v=Wf2filWCcJo" rel="noopener noreferrer">
+                Watch the original WeirdM tutorial
+            </a>
+        </p>
+    </section>
+
+    <section class="card" aria-labelledby="options-title">
+        <h2 id="options-title">Effect</h2>
+
+        <fieldset>
+            <legend>Mode</legend>
+
+            <label class="option">
+                <input type="radio" id="bounce" name="mode" checked>
+                <span>Bounce</span>
+            </label>
+
+            <label class="option">
+                <input type="radio" id="random" name="mode">
+                <span>Random</span>
+            </label>
+
+            <label class="option">
+                <input type="radio" id="trim" name="mode">
+                <span>Trim</span>
+            </label>
+        </fieldset>
+
+        <div id="bounce-options" class="mode-options">
+            <div class="two-column">
+                <div>
+                    <h3>Horizontal</h3>
+                    <label for="bounce-h-style">Style</label>
+                    <select id="bounce-h-style">
+                        <option value="sin">Sin</option>
+                        <option value="cos">Cos</option>
+                        <option value="none" selected>None</option>
+                    </select>
+
+                    <label for="bounce-h-speed">Speed</label>
+                    <input id="bounce-h-speed" type="number" min="1" max="50" step="1" value="10">
+                </div>
+
+                <div>
+                    <h3>Vertical</h3>
+                    <label for="bounce-v-style">Style</label>
+                    <select id="bounce-v-style">
+                        <option value="sin" selected>Sin</option>
+                        <option value="cos">Cos</option>
+                        <option value="none">None</option>
+                    </select>
+
+                    <label for="bounce-v-speed">Speed</label>
+                    <input id="bounce-v-speed" type="number" min="1" max="50" step="1" value="10">
+                </div>
+            </div>
+        </div>
+
+        <div id="random-options" class="mode-options" hidden>
+            <label class="option">
+                <input type="checkbox" id="random-h" checked>
+                <span>Horizontal</span>
+            </label>
+            <label class="option">
+                <input type="checkbox" id="random-v" checked>
+                <span>Vertical</span>
+            </label>
+        </div>
+
+        <div id="trim-options" class="mode-options" hidden>
+            <p class="hint">
+                Trim removes solid-color or transparent borders from all four sides of each frame.
+            </p>
+        </div>
+
+        <label for="crf">CRF <span class="hint">(lower = better quality, larger output)</span></label>
+        <input id="crf" type="number" min="0" max="63" step="1" value="42">
+
+        <label for="filepicker">Video</label>
+        <input
+            type="file"
+            id="filepicker"
+            accept="video/*,.avi,.mkv,.webm,.mov,.mp4,.m4v"
+        >
+        <p class="hint">Long or high-resolution videos need more browser memory.</p>
+
+        <div class="actions">
+            <button class="button start" type="button">Process</button>
+            <button class="button cancel" type="button" disabled>Cancel</button>
+        </div>
+
+        <p id="status" class="status" aria-live="polite"></p>
+    </section>
+</main>
+
 <script src="app.js"></script>
 </body>
 </html>
