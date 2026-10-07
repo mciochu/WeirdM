@@ -134,6 +134,26 @@
 
         <p id="status" class="status" aria-live="polite"></p>
     </section>
+
+    <section class="card diagnostics" aria-labelledby="diagnostics-title">
+        <h2 id="diagnostics-title">Diagnostics</h2>
+        <p class="hint">
+            When processing fails, copy the complete log and paste it into the bug report/chat.
+            The log stays on this page and is never uploaded automatically.
+        </p>
+        <div class="diagnostic-actions">
+            <button class="button secondary" type="button" onclick="copyLogs()">Copy logs</button>
+            <button class="button secondary" type="button" onclick="downloadLogs()">Download logs</button>
+        </div>
+        <textarea
+            id="logs"
+            class="logs"
+            readonly
+            spellcheck="false"
+            aria-label="WeirdM processing log"
+            placeholder="Processing diagnostics will appear here…"
+        ></textarea>
+    </section>
 </main>
 
 <script src="app.js"></script>
