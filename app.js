@@ -98,14 +98,26 @@ const makeVideo = async (file) => {
     setProgress(5);
     ffmpeg.FS('writeFile', 'input.avi', file);
 
+    // Probe the input with a real FFmpeg command. The old code ran
+    // "ffmpeg -i input.avi" without an output, which is not a valid
+    // conversion command and caused processing to stop at 5%.
+    let detectedFps = null;
     ffmpeg.setLogger(({ type, message }) => {
-        if (type === "fferr" && message.includes(" fps")) {
-            fps = message.split(" fps")[0].split(" ").pop();
-        }
+        if (type !== "fferr") return;
+        const match = message.match(/(\\d+(?:\\.\\d+)?)\\s+fps\\b/);
+        if (match) detectedFps = match[1];
     });
-    await ffmpeg.run('-y', '-i', 'input.avi')
+    await ffmpeg.run(
+        '-y',
+        '-i', 'input.avi',
+        '-map', '0:v:0',
+        '-frames:v', '1',
+        '-f', 'null',
+        '-'
+    );
+    ffmpeg.setLogger(() => {});
+    if (detectedFps) fps = detectedFps;
     console.log("Frame rate is " + fps);
-    ffmpeg.setLogger(({ type, message }) => {});
     await ffmpeg.run('-y', '-i', 'input.avi', '%06d.png');
     setProgress(10);
     let framesTotal = 0;
@@ -178,22 +190,30 @@ document.onclick = () => {
 }
 
 startBtn.onclick = () => {
-    if (!filePicker.files) return alert("Pick a file first!");
+    if (!filePicker.files?.length) return alert("Pick a file first!");
     const reader = new FileReader();
     const filename = filePicker.files[0].name.replace(/\.[^/.]+$/, "_weirdm.webm");
     reader.onload = function() {
         const array = new Uint8Array(this.result);
         mode = getMode();
         crf = document.getElementById("crf").value;
-        makeVideo(array).then((final) => {
-            downloadBlob(final, filename);
-            startBtn.disabled = false;
-            startBtn.innerText = "Go!";
-            setProgress(-1);
-            try {
-                ffmpeg.exit();
-            } catch {}
-        });
+        makeVideo(array)
+            .then((final) => {
+                downloadBlob(final, filename);
+            })
+            .catch((error) => {
+                console.error("WeirdM processing failed:", error);
+                const message = error instanceof Error ? error.message : String(error);
+                alert("Processing failed. Please try another video.\\n\\n" + message);
+            })
+            .finally(() => {
+                startBtn.disabled = false;
+                startBtn.innerText = "Go!";
+                setProgress(-1);
+                try {
+                    ffmpeg.exit();
+                } catch {}
+            });
     }
     reader.readAsArrayBuffer(filePicker.files[0]);
     startBtn.disabled = true;
