@@ -58,12 +58,30 @@ const recycleFFmpeg = async () => {
 };
 
 const makeWebmPart = async (inArgs, webmCount) => {
+    if (!inArgs.length) return;
+
     let concat = "";
     inArgs.forEach((arg) => {
-        concat += `file ${arg}\n`;
+        concat += `file '${arg}'\n`;
     });
     ffmpeg.FS('writeFile', 'concat.txt', Uint8Array.from(concat.split('').map(letter => letter.charCodeAt(0))));
-    await ffmpeg.run('-y', '-f', 'concat', '-i', 'concat.txt', '-vf', `settb=AVTB,setpts=N/${fps}/TB,fps=${fps}`, '-pix_fmt', 'yuv420p', '-crf', crf, '-r', fps, webmCount + '.webm');
+    await ffmpeg.run(
+        '-y',
+        '-f', 'concat',
+        '-safe', '0',
+        '-i', 'concat.txt',
+        '-vf', `settb=AVTB,setpts=N/${fps}/TB,fps=${fps}`,
+        '-pix_fmt', 'yuv420p',
+        '-crf', crf,
+        '-r', fps,
+        webmCount + '.webm'
+    );
+
+    try {
+        ffmpeg.FS('readFile', webmCount + '.webm');
+    } catch {
+        throw new Error(`FFmpeg did not create video chunk ${webmCount}.webm.`);
+    }
     /*
     inArgs.forEach((arg) => {
         ffmpeg.FS('unlink', arg);
@@ -104,7 +122,7 @@ const makeVideo = async (file) => {
     let detectedFps = null;
     ffmpeg.setLogger(({ type, message }) => {
         if (type !== "fferr") return;
-        const match = message.match(/(\\d+(?:\\.\\d+)?)\\s+fps\\b/);
+        const match = message.match(/(\d+(?:\.\d+)?)\s+fps\b/);
         if (match) detectedFps = match[1];
     });
     await ffmpeg.run(
@@ -166,9 +184,61 @@ const makeVideo = async (file) => {
         concat += `file ${i}.webm\n`;
     }
     ffmpeg.FS('writeFile', 'concat.txt', Uint8Array.from(concat.split('').map(letter => letter.charCodeAt(0))));
-    await ffmpeg.run('-y', '-f', 'concat', '-safe', '0', '-i', 'concat.txt', '-c', 'copy', 'vid.webm');
+    await ffmpeg.run(
+        '-y',
+        '-f', 'concat',
+        '-safe', '0',
+        '-i', 'concat.txt',
+        '-c', 'copy',
+        'vid.webm'
+    );
+
+    try {
+        ffmpeg.FS('readFile', 'vid.webm');
+    } catch {
+        throw new Error('FFmpeg finished video concatenation but did not create vid.webm.');
+    }
+
     setProgress(95);
-    await ffmpeg.run('-y', '-i', 'vid.webm', '-i', 'input.avi', '-c:v', 'copy', '-map', '0:v', '-map', '1:a?', '-metadata', 'title=WeirdM', 'out.webm');
+
+    // The original final remux could fail when the AVI audio codec was not
+    // directly compatible with WebM. Prefer Opus, then Vorbis, and finally
+    // fall back to the processed video-only WebM so the export never dies
+    // merely because the source audio cannot be muxed.
+    const audioEncodings = [
+        ['libopus', '-b:a', '96k'],
+        ['libvorbis', '-q:a', '4'],
+    ];
+
+    let finalCreated = false;
+    for (const [audioCodec, ...audioArgs] of audioEncodings) {
+        try {
+            await ffmpeg.run(
+                '-y',
+                '-i', 'vid.webm',
+                '-i', 'input.avi',
+                '-map', '0:v:0',
+                '-map', '1:a:0?',
+                '-c:v', 'copy',
+                '-c:a', audioCodec,
+                ...audioArgs,
+                '-shortest',
+                '-metadata', 'title=WeirdM',
+                'out.webm'
+            );
+            ffmpeg.FS('readFile', 'out.webm');
+            finalCreated = true;
+            break;
+        } catch (error) {
+            console.warn(`Audio mux with ${audioCodec} failed:`, error);
+        }
+    }
+
+    if (!finalCreated) {
+        // A video-only export is still a valid WeirdM result.
+        ffmpeg.FS('writeFile', 'out.webm', ffmpeg.FS('readFile', 'vid.webm'));
+    }
+
     setProgress(100);
     return ffmpeg.FS('readFile', 'out.webm');
 
