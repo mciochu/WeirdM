@@ -1,16 +1,18 @@
 # WeirdM
 
-WeirdM creates WebM videos whose **dimensions change while the video is playing**.
+WeirdM creates WebM videos whose **dimensions change while the video is playing**, while keeping the source audio running.
 
-It is intentionally different from a normal video converter:
+The current pipeline deliberately uses **one graphic only**:
 
-1. The source video is decoded locally in the browser.
-2. Frames are processed one by one with WebAssembly ImageMagick.
-3. Bounce, Random, or Trim changes the dimensions of the processed frames.
-4. Frames with the same geometry are encoded into VP8 WebM segments.
+1. The browser decodes exactly the first video frame.
+2. That single frame is saved as `poster.png`.
+3. The source video's remaining frames are never decoded or turned into image files.
+4. The single poster is repeatedly encoded into short VP8 WebM segments with different dimensions.
 5. FFmpeg's concat demuxer joins those segments with stream copy so the final WebM can change dimensions during playback.
-6. Original audio is preserved when possible; otherwise it is encoded to WebM-compatible Opus/Vorbis.
+6. The source audio is extracted and encoded to WebM-compatible Opus, then muxed over the dynamic video.
 7. The final WebM is downloaded directly to the user's device.
+
+This makes long videos dramatically cheaper to process because the browser does not create thousands of PNG frames.
 
 The resizing effect relies on WebM/Matroska and VP8 supporting resolution changes at stream boundaries. See:
 - https://blog.parallax.fyi/video-resizing/
@@ -26,9 +28,9 @@ Changes horizontal and/or vertical size using sine/cosine motion.
 
 Chooses a new horizontal and/or vertical size for every frame.
 
-### Trim
+### Trim first frame
 
-Uses ImageMagick `-trim` to remove solid-color or transparent borders from each frame.
+Uses ImageMagick `-trim` once on the first frame, then reuses that single trimmed graphic for the whole video.
 
 ## Quality
 
@@ -37,6 +39,8 @@ CRF is passed to the VP8 encoder. Lower values favor quality and larger files.
 ## Browser processing
 
 Videos are processed locally. Nothing is uploaded by WeirdM itself.
+
+Only the first frame is decoded into a graphic. The rest of the source video is not frame-processed; its duration is used to determine the WebM length and its audio is retained via Opus.
 
 The app uses:
 - `@ffmpeg/ffmpeg@0.10.1`
@@ -77,4 +81,4 @@ Video processing is CPU- and memory-intensive because frames are decoded and man
 
 The current pipeline releases processed PNG frames immediately after their WebM segment is encoded and periodically recreates the FFmpeg worker while retaining only the source and already-created WebM segments.
 
-Shorter clips and lower source resolutions are still recommended for browser stability.
+The dynamic-size video uses a bounded number of WebM segments (up to 240), so a 4-minute source does not produce thousands of intermediate image files.
