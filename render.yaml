@@ -5,7 +5,7 @@ services:
     branch: mane
     buildCommand: ""
     staticPublishPath: .
-    autoDeploy: true
+    autoDeployTrigger: commit
     headers:
       - path: /*
         name: Cross-Origin-Opener-Policy
