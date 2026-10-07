@@ -4,6 +4,12 @@ const MODES = ["bounce", "random", "trim"];
 const DEFAULT_FPS = 15;
 const DEFAULT_CRF = 42;
 
+// WeirdM now uses exactly one source graphic: the first video frame.
+// The audio keeps the source video's full duration.
+// Resolution changes happen at segment boundaries rather than per source frame.
+const MIN_SEGMENT_SECONDS = 0.5;
+const MAX_SEGMENTS = 240;
+
 let ffmpeg = null;
 let fps = DEFAULT_FPS;
 let crf = DEFAULT_CRF;
@@ -46,8 +52,8 @@ const renderLogs = () => {
 
 const addLog = (message, level = "INFO") => {
     const timestamp = new Date().toISOString();
-    const prefix = `[${timestamp}] [${level}]`;
-    const line = `${prefix} ${formatLogValue(message)}`;
+    const prefix = \`[\${timestamp}] [\${level}]\`;
+    const line = \`\${prefix} \${formatLogValue(message)}\`;
 
     logLines.push(line);
     logBuffer = logLines.join("\n");
@@ -63,11 +69,11 @@ const addLog = (message, level = "INFO") => {
 
 const startStep = (name) => {
     activeStep = name;
-    addLog(`STEP START: ${name}`);
+    addLog(\`STEP START: \${name}\`);
 };
 
 const finishStep = (name) => {
-    addLog(`STEP END: ${name}`);
+    addLog(\`STEP END: \${name}\`);
 };
 
 const resetLogs = () => {
@@ -90,9 +96,9 @@ const setFfmpegLogger = () => {
 
         if (type === "fferr") {
             lastFfmpegOutput += text + "\n";
-            addLog(`FFmpeg STDERR: ${text}`, "FFMPEG");
+            addLog(\`FFmpeg STDERR: \${text}\`, "FFMPEG");
         } else {
-            addLog(`FFmpeg ${type}: ${text}`, "FFMPEG");
+            addLog(\`FFmpeg \${type}: \${text}\`, "FFMPEG");
         }
     });
 };
@@ -114,7 +120,7 @@ const downloadLogs = () => {
     const link = document.createElement("a");
 
     link.href = url;
-    link.download = `weirdm-log-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
+    link.download = \`weirdm-log-\${new Date().toISOString().replace(/[:.]/g, "-")}.txt\`;
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -130,15 +136,16 @@ const logEnvironment = () => {
         crossOriginIsolated: window.crossOriginIsolated,
         sharedArrayBuffer: typeof SharedArrayBuffer !== "undefined",
         url: window.location.href,
-        screen: `${window.innerWidth}x${window.innerHeight}`,
+        screen: \`\${window.innerWidth}x\${window.innerHeight}\`,
     }, "ENV");
 };
 
 const setProgress = (percentage) => {
     if (percentage >= 0) {
         const safePercentage = Math.max(0, Math.min(100, percentage));
-        startBtn.textContent = `Processing (${safePercentage}%)...`;
-        startBtn.style.background = `linear-gradient(to right, #2d7d46 ${safePercentage}%, #4f545c ${safePercentage}%)`;
+        startBtn.textContent = \`Processing (\${safePercentage}%)...\`;
+        startBtn.style.background =
+            \`linear-gradient(to right, #2d7d46 \${safePercentage}%, #4f545c \${safePercentage}%)\`;
     } else {
         startBtn.textContent = "Process";
         startBtn.style.background = "";
@@ -151,7 +158,8 @@ const setControls = (running) => {
     cancelBtn.disabled = !running;
     filePicker.disabled = running;
 
-    document.querySelectorAll('input[name="mode"], select, input[type="number"], input[type="checkbox"]')
+    document
+        .querySelectorAll('input[name="mode"], select, input[type="number"], input[type="checkbox"]')
         .forEach((element) => {
             element.disabled = running;
         });
@@ -175,6 +183,7 @@ const getMode = () => {
     for (const candidate of MODES) {
         if (document.getElementById(candidate).checked) return candidate;
     }
+
     return "bounce";
 };
 
@@ -182,42 +191,9 @@ const syncModeOptions = () => {
     mode = getMode();
 
     for (const candidate of MODES) {
-        const options = document.getElementById(`${candidate}-options`);
+        const options = document.getElementById(\`\${candidate}-options\`);
         options.hidden = candidate !== mode;
     }
-};
-
-const getRandomResize = (frame) => {
-    if (frame === 1) return "100%x100%";
-
-    const doH = document.getElementById("random-h").checked;
-    const doV = document.getElementById("random-v").checked;
-
-    const horizontal = doH ? clamp(Math.ceil(Math.random() * 100), 2, 100) : 100;
-    const vertical = doV ? clamp(Math.ceil(Math.random() * 100), 2, 100) : 100;
-
-    return `${horizontal}%x${vertical}%`;
-};
-
-const getBounceResize = (frame) => {
-    if (frame === 1) return "100%x100%";
-
-    const speedH = getNumericValue("bounce-h-speed", 10, 1, 50);
-    const speedV = getNumericValue("bounce-v-speed", 10, 1, 50);
-
-    const funcs = {
-        none: () => 100,
-        sin: (speed) => (Math.sin(frame * speed / fps) + 1) * 50,
-        cos: (speed) => (Math.cos(frame * speed / fps) + 1) * 50,
-    };
-
-    const hStyle = document.getElementById("bounce-h-style").value;
-    const vStyle = document.getElementById("bounce-v-style").value;
-
-    const horizontal = clamp(Math.ceil(funcs[hStyle](speedH)), 2, 100);
-    const vertical = clamp(Math.ceil(funcs[vStyle](speedV)), 2, 100);
-
-    return `${horizontal}%x${vertical}%`;
 };
 
 const getInputExtension = (file) => {
@@ -227,21 +203,15 @@ const getInputExtension = (file) => {
 
 const sanitizeDownloadName = (name) => {
     const withoutExtension = name.replace(/\.[^/.]+$/, "");
-    const safe = withoutExtension.replace(/[^a-z0-9._-]+/gi, "_").replace(/^_+|_+$/g, "");
+    const safe = withoutExtension
+        .replace(/[^a-z0-9._-]+/gi, "_")
+        .replace(/^_+|_+$/g, "");
+
     return (safe || "video") + "_weirdm.webm";
 };
 
 const writeTextFile = (name, text) => {
     ffmpeg.FS("writeFile", name, new TextEncoder().encode(text));
-};
-
-const fileExists = (name) => {
-    try {
-        ffmpeg.FS("readFile", name);
-        return true;
-    } catch {
-        return false;
-    }
 };
 
 const readFile = (name) => {
@@ -268,13 +238,16 @@ const unlinkQuietly = (name) => {
 
 const assertOutputFile = (name, label) => {
     const data = readFile(name);
+
     if (!data || !data.length) {
-        throw new Error(`${label} was not created by FFmpeg.`);
+        throw new Error(\`\${label} was not created by FFmpeg.\`);
     }
 
-    // WebM/Matroska files start with the EBML header.
-    if (name.endsWith(".webm") && (data[0] !== 0x1a || data[1] !== 0x45 || data[2] !== 0xdf || data[3] !== 0xa3)) {
-        throw new Error(`${label} was created, but it is not a valid WebM file.`);
+    if (
+        name.endsWith(".webm") &&
+        (data[0] !== 0x1a || data[1] !== 0x45 || data[2] !== 0xdf || data[3] !== 0xa3)
+    ) {
+        throw new Error(\`\${label} was created, but it is not a valid WebM file.\`);
     }
 
     return data;
@@ -290,16 +263,19 @@ const createFFmpegInstance = async () => {
 
 const runFFmpeg = async (...args) => {
     throwIfCancelled();
-    addLog(`FFmpeg RUN: ${args.join(" ")}`, "COMMAND");
+
+    addLog(\`FFmpeg RUN: \${args.join(" ")}\`, "COMMAND");
     clearFfmpegLogs();
 
     try {
         await ffmpeg.run(...args);
     } catch (error) {
-        addLog(`FFmpeg command failed: ${args.join(" ")}`, "ERROR");
+        addLog(\`FFmpeg command failed: \${args.join(" ")}\`, "ERROR");
+
         if (lastFfmpegOutput.trim()) {
-            addLog(`FFmpeg last output:\n${lastFfmpegOutput.trim()}`, "ERROR");
+            addLog(\`FFmpeg last output:\n\${lastFfmpegOutput.trim()}\`, "ERROR");
         }
+
         addLog(error, "ERROR");
         throw error;
     }
@@ -307,133 +283,76 @@ const runFFmpeg = async (...args) => {
     throwIfCancelled();
 };
 
-const detectInputFps = async (inputName) => {
-    startStep("Detect input video properties");
-    clearFfmpegLogs();
+const waitForVideoEvent = (video, eventName, timeoutMs = 15000) =>
+    new Promise((resolve, reject) => {
+        const readyStateForEvent = {
+            loadedmetadata: HTMLMediaElement.HAVE_METADATA,
+            loadeddata: HTMLMediaElement.HAVE_CURRENT_DATA,
+        }[eventName];
 
-    await runFFmpeg(
-        "-y",
-        "-i", inputName,
-        "-map", "0:v:0",
-        "-frames:v", "1",
-        "-f", "null",
-        "-"
-    );
-
-    const probeText = lastFfmpegOutput;
-    const match = probeText.match(/(\d+(?:\.\d+)?)\s+fps\b/);
-    const codecMatch = probeText.match(/Video:\s+([a-z0-9_]+)/i);
-    const codec = codecMatch ? codecMatch[1].toLowerCase() : null;
-    const decoderMissing = /Decoder \(codec [^)]+\) not found for input stream/i.test(probeText);
-
-    if (match) {
-        fps = Number(match[1]);
-        addLog(`Detected FPS: ${fps}`);
-    } else {
-        fps = DEFAULT_FPS;
-        addLog(`Could not reliably detect FPS; using fallback ${DEFAULT_FPS}.`, "WARN");
-    }
-
-    addLog({
-        detectedVideoCodec: codec || "(unknown)",
-        ffmpegVideoDecoderAvailable: !decoderMissing,
-    }, "INPUT");
-
-    finishStep("Detect input video properties");
-
-    return {
-        codec,
-        decoderMissing,
-        probeText,
-    };
-};
-
-const waitForVideoEvent = (video, eventName, timeoutMs = 15000) => new Promise((resolve, reject) => {
-    const readyStateForEvent = {
-        loadedmetadata: HTMLMediaElement.HAVE_METADATA,
-        loadeddata: HTMLMediaElement.HAVE_CURRENT_DATA,
-    }[eventName];
-
-    if (readyStateForEvent !== undefined && video.readyState >= readyStateForEvent) {
-        resolve();
-        return;
-    }
-
-    let timer = null;
-
-    const cleanup = () => {
-        if (timer) clearTimeout(timer);
-        video.removeEventListener(eventName, onEvent);
-        video.removeEventListener("error", onError);
-    };
-
-    const onEvent = () => {
-        cleanup();
-        resolve();
-    };
-
-    const onError = () => {
-        cleanup();
-        reject(new Error(
-            `Browser video decoder emitted an error while waiting for ${eventName}: ` +
-            `${video.error?.message || "unknown media error"}.`
-        ));
-    };
-
-    timer = setTimeout(() => {
-        cleanup();
-        reject(new Error(`Timed out waiting for browser video event "${eventName}".`));
-    }, timeoutMs);
-
-    video.addEventListener(eventName, onEvent, { once: true });
-    video.addEventListener("error", onError, { once: true });
-});
-
-const seekVideo = async (video, targetTime) => {
-    const safeTarget = Math.min(
-        Math.max(0, targetTime),
-        Math.max(0, video.duration - 0.001)
-    );
-
-    if (Math.abs(video.currentTime - safeTarget) < 0.0005 && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-        return;
-    }
-
-    const seekPromise = waitForVideoEvent(video, "seeked", 15000);
-    video.currentTime = safeTarget;
-
-    await seekPromise;
-    await waitForVideoEvent(video, "loadeddata", 15000);
-};
-
-const canvasToPngBytes = (canvas) => new Promise((resolve, reject) => {
-    canvas.toBlob(async (blob) => {
-        if (!blob) {
-            reject(new Error("Browser could not encode a decoded frame as PNG."));
+        if (readyStateForEvent !== undefined && video.readyState >= readyStateForEvent) {
+            resolve();
             return;
         }
 
-        try {
-            resolve(new Uint8Array(await blob.arrayBuffer()));
-        } catch (error) {
-            reject(error);
-        }
-    }, "image/png");
-});
+        let timer = null;
 
-const extractFramesWithBrowser = async (file) => {
-    startStep("Decode source video with browser fallback");
+        const cleanup = () => {
+            if (timer) clearTimeout(timer);
+            video.removeEventListener(eventName, onEvent);
+            video.removeEventListener("error", onError);
+        };
+
+        const onEvent = () => {
+            cleanup();
+            resolve();
+        };
+
+        const onError = () => {
+            cleanup();
+            reject(new Error(
+                \`Browser video decoder emitted an error while waiting for \${eventName}: \` +
+                \`\${video.error?.message || "unknown media error"}.\`
+            ));
+        };
+
+        timer = setTimeout(() => {
+            cleanup();
+            reject(new Error(\`Timed out waiting for browser video event "\${eventName}".\`));
+        }, timeoutMs);
+
+        video.addEventListener(eventName, onEvent, { once: true });
+        video.addEventListener("error", onError, { once: true });
+    });
+
+const canvasToPngBytes = (canvas) =>
+    new Promise((resolve, reject) => {
+        canvas.toBlob(async (blob) => {
+            if (!blob) {
+                reject(new Error("Browser could not encode the first video frame as PNG."));
+                return;
+            }
+
+            try {
+                resolve(new Uint8Array(await blob.arrayBuffer()));
+            } catch (error) {
+                reject(error);
+            }
+        }, "image/png");
+    });
+
+const extractFirstFrame = async (file) => {
+    startStep("Extract exactly one graphic: first video frame");
 
     const video = document.createElement("video");
     const canvas = document.createElement("canvas");
     const context = canvas.getContext("2d", { willReadFrequently: false });
 
     if (!context) {
-        throw new Error("Browser canvas 2D context is unavailable; cannot extract video frames.");
+        throw new Error("Browser canvas 2D context is unavailable.");
     }
 
     const objectUrl = URL.createObjectURL(file);
-    let frameCount = 0;
 
     try {
         video.preload = "auto";
@@ -441,73 +360,54 @@ const extractFramesWithBrowser = async (file) => {
         video.playsInline = true;
         video.src = objectUrl;
 
-        addLog(`Native browser decoder input MIME: ${file.type || "(unknown)"}`, "INPUT");
-        addLog(`HTMLVideoElement canPlayType(video/mp4): ${video.canPlayType("video/mp4") || "empty"}`, "INPUT");
-        addLog(`HTMLVideoElement canPlayType(video/webm): ${video.canPlayType("video/webm") || "empty"}`, "INPUT");
+        addLog(\`Browser decoder input MIME: \${file.type || "(unknown)"}\`, "INPUT");
+        addLog(\`canPlayType(video/mp4): \${video.canPlayType("video/mp4") || "empty"}\`, "INPUT");
+        addLog(\`canPlayType(video/webm): \${video.canPlayType("video/webm") || "empty"}\`, "INPUT");
 
         await waitForVideoEvent(video, "loadedmetadata");
         await waitForVideoEvent(video, "loadeddata");
 
-        if (!Number.isFinite(video.duration) || video.duration <= 0) {
-            throw new Error("Browser video decoder loaded the file but returned no usable duration.");
-        }
-
         const width = video.videoWidth;
         const height = video.videoHeight;
+        const duration = video.duration;
 
         if (!width || !height) {
-            throw new Error("Browser video decoder returned an invalid video size.");
+            throw new Error("Browser returned an invalid video size.");
+        }
+
+        if (!Number.isFinite(duration) || duration <= 0) {
+            throw new Error("Browser returned no usable video duration.");
         }
 
         canvas.width = width;
         canvas.height = height;
+        context.drawImage(video, 0, 0, width, height);
 
-        const totalFrames = Math.max(1, Math.ceil(video.duration * fps));
+        const pngBytes = await canvasToPngBytes(canvas);
+        ffmpeg.FS("writeFile", "poster.png", pngBytes);
+
         addLog({
-            durationSeconds: video.duration,
+            durationSeconds: duration,
             width,
             height,
-            extractionFps: fps,
-            estimatedFrames: totalFrames,
+            sourceGraphic: "poster.png",
+            sourceFramesDecoded: 1,
         }, "INPUT");
 
-        video.pause();
-        addLog("Browser seek-based frame extraction initialized.", "INFO");
+        addLog(
+            "Only the first video frame was decoded. The remaining source video frames are not used.",
+            "SUCCESS"
+        );
 
-        for (let index = 0; index < totalFrames; index++) {
-            throwIfCancelled();
+        finishStep("Extract exactly one graphic: first video frame");
 
-            const targetTime = Math.min(
-                Math.max(0, index / fps),
-                Math.max(0, video.duration - 0.001)
-            );
-
-            await seekVideo(video, targetTime);
-
-            context.drawImage(video, 0, 0, width, height);
-
-            const pngBytes = await canvasToPngBytes(canvas);
-            const frameName = String(index + 1).padStart(6, "0") + ".png";
-            ffmpeg.FS("writeFile", frameName, pngBytes);
-            frameCount++;
-
-            if (
-                index === 0 ||
-                index === totalFrames - 1 ||
-                (index + 1) % Math.max(1, Math.floor(totalFrames / 20)) === 0
-            ) {
-                addLog(`Browser decoded frame ${index + 1}/${totalFrames} at ${targetTime.toFixed(3)}s.`);
-            }
-
-            setProgress(5 + Math.floor(((index + 1) / totalFrames) * 5));
-        }
-
-        addLog(`Browser fallback decoded ${frameCount} PNG frames successfully.`, "SUCCESS");
-        finishStep("Decode source video with browser fallback");
-
-        return frameCount;
+        return {
+            duration,
+            width,
+            height,
+        };
     } catch (error) {
-        addLog("Browser decoder fallback failed.", "ERROR");
+        addLog("Could not extract the first video frame with the browser decoder.", "ERROR");
         addLog(error, "ERROR");
         throw error;
     } finally {
@@ -520,76 +420,183 @@ const extractFramesWithBrowser = async (file) => {
     }
 };
 
-const recycleFFmpeg = async (segmentCount, inputName) => {
-    const preservedNames = [inputName];
+const preparePoster = async () => {
+    if (mode !== "trim") return;
 
-    for (let i = 0; i < segmentCount; i++) {
-        preservedNames.push(`${i}.webm`);
+    startStep("Trim the single source graphic once");
+
+    const poster = readFile("poster.png");
+
+    if (!poster) {
+        throw new Error("poster.png is missing before Trim processing.");
     }
 
-    const preservedFiles = [];
+    const result = await Magick.Call(
+        [{ name: "in.png", content: poster }],
+        [
+            "convert",
+            "in.png",
+            "-trim",
+            "-shave", "1x1",
+            "+repage",
+            "poster.png",
+        ]
+    );
 
-    for (const name of preservedNames) {
-        const data = readFile(name);
-        if (data) {
-            preservedFiles.push([name, data]);
-            unlinkQuietly(name);
-        }
+    if (!result || !result.length || !result[0].buffer) {
+        throw new Error("ImageMagick did not return the trimmed first-frame graphic.");
     }
 
-    try {
-        ffmpeg.exit();
-    } catch {}
+    ffmpeg.FS("writeFile", "poster.png", result[0].buffer);
 
-    await createFFmpegInstance();
+    addLog(
+        "Trim was applied once to the first frame. The same resulting graphic is reused for the whole video.",
+        "SUCCESS"
+    );
 
-    for (const [name, data] of preservedFiles) {
-        ffmpeg.FS("writeFile", name, data);
-    }
+    finishStep("Trim the single source graphic once");
 };
 
-const makeWebmPart = async (frameNames, segmentIndex) => {
-    if (!frameNames.length) return false;
+const getBouncePercent = (timeSeconds, style, speed) => {
+    if (style === "none") return 100;
 
-    const concat = frameNames.map((name) => `file '${name}'`).join("\n") + "\n";
-    writeTextFile("frames-concat.txt", concat);
+    const phase = timeSeconds * speed;
+    const wave = style === "cos" ? Math.cos(phase) : Math.sin(phase);
+
+    return clamp(Math.ceil(((wave + 1) * 50)), 2, 100);
+};
+
+const getSegmentGeometry = (segmentIndex, startSeconds, baseWidth, baseHeight) => {
+    if (mode === "trim") {
+        return {
+            widthPercent: 100,
+            heightPercent: 100,
+            width: baseWidth,
+            height: baseHeight,
+        };
+    }
+
+    if (mode === "random") {
+        const horizontalEnabled = document.getElementById("random-h").checked;
+        const verticalEnabled = document.getElementById("random-v").checked;
+
+        return {
+            widthPercent: horizontalEnabled ? clamp(Math.ceil(Math.random() * 99) + 1, 2, 100) : 100,
+            heightPercent: verticalEnabled ? clamp(Math.ceil(Math.random() * 99) + 1, 2, 100) : 100,
+        };
+    }
+
+    const speedH = getNumericValue("bounce-h-speed", 10, 1, 50);
+    const speedV = getNumericValue("bounce-v-speed", 10, 1, 50);
+    const styleH = document.getElementById("bounce-h-style").value;
+    const styleV = document.getElementById("bounce-v-style").value;
+
+    return {
+        widthPercent: getBouncePercent(startSeconds, styleH, speedH),
+        heightPercent: getBouncePercent(startSeconds, styleV, speedV),
+    };
+};
+
+const makeWebmSegment = async ({
+    index,
+    duration,
+    widthPercent,
+    heightPercent,
+}) => {
+    throwIfCancelled();
+
+    const outputName = \`\${index}.webm\`;
+    const widthExpression = \`ceil(iw*\${widthPercent}/100/2)*2\`;
+    const heightExpression = \`ceil(ih*\${heightPercent}/100/2)*2\`;
 
     await runFFmpeg(
         "-y",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", "frames-concat.txt",
+        "-loop", "1",
+        "-i", "poster.png",
+        "-t", duration.toFixed(3),
         "-an",
-        "-vf", `scale=ceil(iw/2)*2:ceil(ih/2)*2,settb=AVTB,setpts=N/${fps}/TB,fps=${fps}`,
+        "-vf", \`scale=\${widthExpression}:\${heightExpression}\`,
+        "-r", String(fps),
         "-c:v", "libvpx",
         "-pix_fmt", "yuv420p",
         "-crf", String(crf),
         "-b:v", "0",
-        segmentIndex + ".webm"
+        outputName
     );
 
-    assertOutputFile(segmentIndex + ".webm", `Video segment ${segmentIndex}.webm`);
-    generatedSegments.push(segmentIndex);
-
-    // PNGs are no longer needed after the segment has been encoded.
-    // The original project kept them around, which made long videos
-    // unnecessarily memory-hungry.
-    frameNames.forEach(unlinkQuietly);
-    unlinkQuietly("frames-concat.txt");
-
-    return true;
+    assertOutputFile(outputName, \`Video segment \${index}\`);
+    generatedSegments.push(index);
 };
 
-const joinWebmSegments = async (segmentCount) => {
-    startStep(`Join ${segmentCount} WebM segments`);
+const buildSegments = async ({ duration, width, height }) => {
+    startStep("Generate dynamic-size video from one graphic");
 
-    const concat = Array.from(
-        { length: segmentCount },
-        (_, index) => `file ${index}.webm`
-    ).join("\n") + "\n";
+    const targetSegmentCount = Math.min(
+        MAX_SEGMENTS,
+        Math.max(1, Math.ceil(duration / MIN_SEGMENT_SECONDS))
+    );
+
+    const segmentSeconds = Math.max(MIN_SEGMENT_SECONDS, duration / targetSegmentCount);
+    const actualSegmentCount = Math.ceil(duration / segmentSeconds);
+
+    addLog({
+        strategy: "one static graphic + changing WebM segment dimensions",
+        sourceGraphic: "poster.png",
+        durationSeconds: duration,
+        segmentSeconds,
+        plannedSegments: actualSegmentCount,
+        baseWidth: width,
+        baseHeight: height,
+    }, "INFO");
+
+    for (let index = 0; index < actualSegmentCount; index++) {
+        throwIfCancelled();
+
+        const start = index * segmentSeconds;
+        const segmentDuration = Math.min(segmentSeconds, duration - start);
+        if (segmentDuration <= 0) break;
+
+        const geometry = getSegmentGeometry(index, start, width, height);
+
+        addLog({
+            segment: index + 1,
+            totalSegments: actualSegmentCount,
+            startSeconds: Number(start.toFixed(3)),
+            durationSeconds: Number(segmentDuration.toFixed(3)),
+            widthPercent: geometry.widthPercent,
+            heightPercent: geometry.heightPercent,
+        }, "SHAPE");
+
+        await makeWebmSegment({
+            index,
+            duration: segmentDuration,
+            widthPercent: geometry.widthPercent,
+            heightPercent: geometry.heightPercent,
+        });
+
+        setProgress(10 + Math.floor(((index + 1) / actualSegmentCount) * 75));
+        setStatus(
+            \`Building shape segments: \${index + 1}/\${actualSegmentCount}\`
+        );
+    }
+
+    finishStep("Generate dynamic-size video from one graphic");
+    addLog(\`Generated \${generatedSegments.length} WebM segments from exactly one source graphic.\`);
+
+    if (!generatedSegments.length) {
+        throw new Error("No WebM video segments were generated.");
+    }
+};
+
+const joinWebmSegments = async () => {
+    startStep(\`Join \${generatedSegments.length} WebM segments\`);
+
+    const concat = generatedSegments
+        .map((index) => \`file \${index}.webm\`)
+        .join("\n") + "\n";
 
     writeTextFile("segments-concat.txt", concat);
-    addLog(`segments-concat.txt:\n${concat}`, "INPUT");
+    addLog(\`segments-concat.txt contains \${generatedSegments.length} segments.\`, "INPUT");
 
     clearFfmpegLogs();
 
@@ -605,89 +612,108 @@ const joinWebmSegments = async (segmentCount) => {
             "vid.webm"
         );
     } catch (error) {
-        addLog(`Join failed for ${segmentCount} segments.`, "ERROR");
+        addLog(
+            "Joining the dynamic WebM segments failed. Resolution changes require stream copy.",
+            "ERROR"
+        );
+
         if (lastFfmpegOutput.trim()) {
-            addLog(`Full FFmpeg concat output:\n${lastFfmpegOutput.trim()}`, "ERROR");
+            addLog(\`Full FFmpeg concat output:\n\${lastFfmpegOutput.trim()}\`, "ERROR");
         }
+
         throw new Error(
-            "FFmpeg could not join the processed WebM segments. " +
-            "See the Diagnostic log below for the complete FFmpeg output."
+            "FFmpeg could not join the dynamic-size WebM segments. " +
+            "See Diagnostics for the complete FFmpeg output."
         );
     }
 
     const result = assertOutputFile("vid.webm", "Joined WebM");
-    addLog(`Joined WebM size: ${result.length} bytes.`);
-    finishStep(`Join ${segmentCount} WebM segments`);
+    addLog(\`Joined dynamic WebM size: \${result.length} bytes.\`);
+    finishStep(\`Join \${generatedSegments.length} WebM segments\`);
+
     return result;
 };
 
-const muxAudio = async (inputName) => {
-    startStep("Mux final WebM and source audio");
+const muxSourceAudio = async (inputName, durationSeconds) => {
+    startStep("Keep the source audio for the full video duration");
+
+    unlinkQuietly("audio.opus");
     unlinkQuietly("out.webm");
 
-    addLog(`Audio input: ${inputName}`);
+    try {
+        await runFFmpeg(
+            "-y",
+            "-i", inputName,
+            "-vn",
+            "-sn",
+            "-dn",
+            "-map", "0:a:0",
+            "-c:a", "libopus",
+            "-b:a", "96k",
+            "-t", durationSeconds.toFixed(3),
+            "audio.opus"
+        );
 
-    // First preserve an already WebM-compatible audio stream without
-    // re-encoding. If that is not possible, encode to Opus/Vorbis.
-    const attempts = [
-        { codec: "copy", args: [] },
-        { codec: "libopus", args: ["-b:a", "96k"] },
-        { codec: "libvorbis", args: ["-q:a", "4"] },
-    ];
+        assertOutputFile("audio.opus", "Source audio track");
 
-    for (const attempt of attempts) {
-        try {
-            await runFFmpeg(
-                "-y",
-                "-i", "vid.webm",
-                "-i", inputName,
-                "-map", "0:v:0",
-                "-map", "1:a:0?",
-                "-c:v", "copy",
-                "-c:a", attempt.codec,
-                ...attempt.args,
-                "-metadata", "title=WeirdM",
-                "out.webm"
-            );
+        await runFFmpeg(
+            "-y",
+            "-i", "vid.webm",
+            "-i", "audio.opus",
+            "-map", "0:v:0",
+            "-map", "1:a:0",
+            "-c:v", "copy",
+            "-c:a", "copy",
+            "-shortest",
+            "-metadata", "title=WeirdM",
+            "out.webm"
+        );
 
-            const output = assertOutputFile("out.webm", "Final WebM");
-            addLog(`Final WebM created with audio codec: ${attempt.codec}; size: ${output.length} bytes.`);
-            finishStep("Mux final WebM and source audio");
-            return output;
-        } catch (error) {
-            console.warn(`Audio mux attempt ${attempt.codec} failed:`, error);
-            addLog(`Audio mux attempt ${attempt.codec} failed: ${formatLogValue(error)}`, "WARN");
-            if (lastFfmpegOutput.trim()) {
-                addLog(`FFmpeg audio output:\n${lastFfmpegOutput.trim()}`, "WARN");
-            }
-            unlinkQuietly("out.webm");
+        const output = assertOutputFile("out.webm", "Final WebM");
+        addLog(
+            \`Source audio encoded to Opus and muxed with the dynamic video. Output size: \${output.length} bytes.\`,
+            "SUCCESS"
+        );
+
+        finishStep("Keep the source audio for the full video duration");
+        return output;
+    } catch (error) {
+        addLog(
+            "Audio could not be encoded/muxed. Falling back to video-only output.",
+            "WARN"
+        );
+
+        if (lastFfmpegOutput.trim()) {
+            addLog(\`FFmpeg audio output:\n\${lastFfmpegOutput.trim()}\`, "WARN");
         }
-    }
 
-    // Audio is optional for WeirdM. A video-only result is still a valid
-    // export when the source audio cannot be represented in WebM.
-    const videoOnly = readFile("vid.webm");
-    if (!videoOnly) {
-        throw new Error("Final video exists neither with nor without audio.");
-    }
+        const videoOnly = readFile("vid.webm");
+        if (!videoOnly) {
+            throw error;
+        }
 
-    ffmpeg.FS("writeFile", "out.webm", videoOnly);
-    addLog("No compatible source audio was available; using video-only WebM.", "WARN");
-    const output = assertOutputFile("out.webm", "Final video-only WebM");
-    addLog(`Final video-only WebM size: ${output.length} bytes.`);
-    finishStep("Mux final WebM and source audio");
-    return output;
+        ffmpeg.FS("writeFile", "out.webm", videoOnly);
+        const output = assertOutputFile("out.webm", "Video-only WebM");
+        addLog(
+            \`Video-only WebM created because source audio was unavailable. Size: \${output.length} bytes.\`,
+            "WARN"
+        );
+
+        finishStep("Keep the source audio for the full video duration");
+        return output;
+    }
 };
 
 const cleanupWorkspace = (inputName) => {
     unlinkQuietly(inputName);
-    unlinkQuietly("frames-concat.txt");
+    unlinkQuietly("poster.png");
     unlinkQuietly("segments-concat.txt");
+    unlinkQuietly("audio.opus");
     unlinkQuietly("vid.webm");
     unlinkQuietly("out.webm");
 
     generatedSegments.forEach((index) => {
-        unlinkQuietly(`${index}.webm`);
+        unlinkQuietly(\`\${index}.webm\`);
     });
 
     generatedSegments = [];
@@ -696,7 +722,12 @@ const cleanupWorkspace = (inputName) => {
 const makeVideo = async (file) => {
     resetLogs();
     addLog("========== WeirdM processing started ==========");
+    addLog(
+        "NEW PIPELINE: one first-frame graphic + dynamic WebM dimensions + full source audio.",
+        "INFO"
+    );
     logEnvironment();
+
     addLog({
         name: file.name,
         type: file.type || "(browser did not provide MIME type)",
@@ -710,9 +741,17 @@ const makeVideo = async (file) => {
     generatedSegments = [];
 
     const extension = getInputExtension(file);
-    const inputName = `input.${extension}`;
+    const inputName = \`input.\${extension}\`;
     const outputName = sanitizeDownloadName(file.name);
-    addLog(`Input extension: ${extension}; internal FFmpeg name: ${inputName}; output: ${outputName}`, "INPUT");
+
+    addLog(
+        \`Input extension: \${extension}; internal FFmpeg name: \${inputName}; output: \${outputName}\`,
+        "INPUT"
+    );
+    addLog(
+        \`Output frame rate: \${fps} FPS. Source video frames after the first are intentionally ignored.\`,
+        "INFO"
+    );
 
     if (typeof SharedArrayBuffer === "undefined" || window.crossOriginIsolated !== true) {
         throw new Error(
@@ -728,200 +767,56 @@ const makeVideo = async (file) => {
 
     setProgress(0);
     setStatus("Loading video engine…");
-
     await createFFmpegInstance();
 
-    setStatus("Loading image processor…");
+    ffmpeg.FS(
+        "writeFile",
+        inputName,
+        new Uint8Array(await file.arrayBuffer())
+    );
+
     startStep("Initialize ImageMagick");
     if (!window.magickReady) {
         throw new Error("ImageMagick loader is unavailable.");
     }
+
     await window.magickReady;
+
     if (!window.Magick || typeof window.Magick.Call !== "function") {
         throw new Error("ImageMagick failed to initialize.");
     }
+
     addLog("ImageMagick initialized.");
     finishStep("Initialize ImageMagick");
-    throwIfCancelled();
 
     setProgress(5);
-    ffmpeg.FS("writeFile", inputName, new Uint8Array(await file.arrayBuffer()));
+    setStatus("Reading first video frame…");
 
-    setStatus("Reading video information…");
-    const inputProbe = await detectInputFps(inputName);
+    const source = await extractFirstFrame(file);
 
-    setStatus(`Extracting frames at about ${fps} FPS…`);
+    await preparePoster();
 
-    let decodedFrames;
-
-    if (inputProbe.decoderMissing) {
-        addLog(
-            `FFmpeg cannot decode codec "${inputProbe.codec || "unknown"}". Switching to native browser video decoding.`,
-            "WARN"
-        );
-
-        await extractFramesWithBrowser(file);
-
-        decodedFrames = listFiles()
-            .filter((name) => /^\d+\.png$/i.test(name))
-            .sort((a, b) => Number(a.slice(0, -4)) - Number(b.slice(0, -4)));
-
-        if (!decodedFrames.length) {
-            throw new Error(
-                `Neither FFmpeg nor the browser produced video frames for codec "${inputProbe.codec || "unknown"}".`
-            );
-        }
-    } else {
-        startStep("Decode source video into PNG frames");
-
-        // Explicitly use the image2 muxer and preserve the source frame rate.
-        await runFFmpeg(
-            "-y",
-            "-i", inputName,
-            "-map", "0:v:0",
-            "-an",
-            "-sn",
-            "-dn",
-            "-vsync", "0",
-            "-f", "image2",
-            "-start_number", "1",
-            "%06d.png"
-        );
-
-        decodedFrames = listFiles()
-            .filter((name) => /^\d+\.png$/i.test(name))
-            .sort((a, b) => Number(a.slice(0, -4)) - Number(b.slice(0, -4)));
-
-        if (!decodedFrames.length) {
-            const files = listFiles()
-                .filter((name) => name !== "." && name !== "..")
-                .slice(0, 40);
-
-            throw new Error(
-                "FFmpeg decoded no video frames." +
-                (files.length ? ` Files in FFmpeg filesystem: ${files.join(", ")}.` : "")
-            );
-        }
-
-        finishStep("Decode source video into PNG frames");
-    }
-
-    const framesTotal = decodedFrames.length;
-    addLog(`Total decoded PNG frames available for processing: ${framesTotal}.`);
     setProgress(10);
-    setStatus(`Processing ${framesTotal} frames…`);
-    startStep(`Apply ${mode.toUpperCase()} effect to frames`);
+    setStatus("Creating dynamic dimensions from one graphic…");
 
-    let lastGeometry = null;
-    let segmentIndex = 0;
-    let frameNames = [];
+    await buildSegments(source);
 
-    for (let frame = 1; frame <= framesTotal; frame++) {
-        throwIfCancelled();
-
-        const frameName = String(frame).padStart(6, "0") + ".png";
-        const inputFrame = readFile(frameName);
-
-        if (!inputFrame) {
-            throw new Error(`Missing decoded frame ${frameName}.`);
-        }
-
-        const args = {
-            trim: [
-                "convert",
-                "in.png",
-                "-trim",
-                "-shave", "1x1",
-                "+repage",
-                "-set", "filename:mysize", "%wx%h",
-                "%[filename:mysize]"
-            ],
-            bounce: [
-                "convert",
-                "in.png",
-                "-resize", getBounceResize(frame),
-                "-set", "filename:mysize", "%wx%h",
-                "%[filename:mysize]"
-            ],
-            random: [
-                "convert",
-                "in.png",
-                "-resize", getRandomResize(frame),
-                "-set", "filename:mysize", "%wx%h",
-                "%[filename:mysize]"
-            ],
-        }[mode];
-
-        const result = await Magick.Call(
-            [{ name: "in.png", content: inputFrame }],
-            args
-        );
-
-        if (!result || !result.length || !result[0].buffer) {
-            throw new Error(`ImageMagick did not return processed frame ${frame}.`);
-        }
-
-        const geometry = String(result[0].name || "").match(/(\d+)x(\d+)/);
-        if (!geometry) {
-            throw new Error(`ImageMagick returned an invalid size for frame ${frame}.`);
-        }
-
-        const width = Number(geometry[1]);
-        const height = Number(geometry[2]);
-
-        if (width < 1 || height < 1) {
-            throw new Error(`Frame ${frame} produced an empty image.`);
-        }
-
-        const normalizedGeometry = `${width}x${height}`;
-        ffmpeg.FS("writeFile", frameName, result[0].buffer);
-
-        if (lastGeometry !== null && lastGeometry !== normalizedGeometry) {
-            addLog(`Geometry changed: ${lastGeometry} → ${normalizedGeometry}; closing segment ${segmentIndex}`);
-            if (await makeWebmPart(frameNames, segmentIndex)) {
-                segmentIndex++;
-
-                // Recycle immediately after a complete group. At this point
-                // there are no unencoded frames from the previous segment.
-                if (segmentIndex % 10 === 0) {
-                    await recycleFFmpeg(segmentIndex, inputName);
-                }
-            }
-            frameNames = [];
-        }
-
-        frameNames.push(frameName);
-        lastGeometry = normalizedGeometry;
-
-        setProgress(10 + Math.floor((frame / framesTotal) * 80));
-    }
-
-    if (await makeWebmPart(frameNames, segmentIndex)) {
-        segmentIndex++;
-    }
-
-    finishStep(`Apply ${mode.toUpperCase()} effect to frames`);
-    addLog(`Generated ${segmentIndex} WebM video segments.`);
-    
-    if (!segmentIndex) {
-        throw new Error("No WebM segments were generated.");
-    }
-
-    setProgress(90);
-    setStatus("Joining resizing WebM segments…");
-    await joinWebmSegments(segmentIndex);
+    setProgress(88);
+    setStatus("Joining dynamic WebM…");
+    await joinWebmSegments();
 
     setProgress(95);
-    setStatus("Preserving source audio…");
-    const final = await muxAudio(inputName);
+    setStatus("Keeping source audio…");
+
+    const final = await muxSourceAudio(inputName, source.duration);
 
     setProgress(100);
     setStatus("Done. Downloading your WeirdM…");
-    addLog(`SUCCESS: output ${outputName} is ready for download.`, "SUCCESS");
+
+    addLog(\`SUCCESS: output \${outputName} is ready for download.\`, "SUCCESS");
     addLog("========== WeirdM processing finished successfully ==========");
 
-    const downloadData = new Uint8Array(final);
-    const blob = new Blob([downloadData], { type: "video/webm" });
+    const blob = new Blob([new Uint8Array(final)], { type: "video/webm" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
 
@@ -940,6 +835,7 @@ startBtn.addEventListener("click", async () => {
     if (processing) return;
 
     const file = filePicker.files?.[0];
+
     if (!file) {
         setStatus("Choose a video file first.", true);
         return;
@@ -954,10 +850,11 @@ startBtn.addEventListener("click", async () => {
     } catch (error) {
         console.error("WeirdM processing failed:", error);
         addLog("========== WeirdM processing FAILED ==========", "ERROR");
-        addLog(`Active step: ${activeStep || "(none)"}`, "ERROR");
+        addLog(\`Active step: \${activeStep || "(none)"}\`, "ERROR");
         addLog(error, "ERROR");
+
         if (lastFfmpegOutput.trim()) {
-            addLog(`Latest FFmpeg output:\n${lastFfmpegOutput.trim()}`, "ERROR");
+            addLog(\`Latest FFmpeg output:\n\${lastFfmpegOutput.trim()}\`, "ERROR");
         }
 
         if (cancelRequested) {
@@ -967,12 +864,15 @@ startBtn.addEventListener("click", async () => {
             const message = error instanceof Error ? error.message : String(error);
             setProgress(-1);
             setStatus(message, true);
-            alert("Processing failed. Please try another video.\n\n" + message);
+            alert("Processing failed. Please copy the Diagnostics log.\n\n" + message);
         }
     } finally {
         try {
-            const inputName = file ? `input.${getInputExtension(file)}` : null;
-            if (ffmpeg && inputName) cleanupWorkspace(inputName);
+            const inputName = file ? \`input.\${getInputExtension(file)}\` : null;
+
+            if (ffmpeg && inputName) {
+                cleanupWorkspace(inputName);
+            }
         } catch (cleanupError) {
             console.warn("Cleanup failed:", cleanupError);
         }
@@ -984,7 +884,6 @@ startBtn.addEventListener("click", async () => {
         ffmpeg = null;
         setControls(false);
         addLog("Cleanup complete.");
-
 
         if (!cancelRequested && !statusEl.classList.contains("error")) {
             setProgress(-1);
@@ -1006,7 +905,6 @@ cancelBtn.addEventListener("click", () => {
 document.querySelectorAll('input[name="mode"]').forEach((radio) => {
     radio.addEventListener("change", syncModeOptions);
 });
-
 
 document.getElementById("copy-logs").addEventListener("click", copyLogs);
 document.getElementById("download-logs").addEventListener("click", downloadLogs);
