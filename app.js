@@ -181,22 +181,53 @@ const makeVideo = async (file) => {
     setProgress(90);
     let concat = "";
     for (let i = 0; i < webmCount; i++) {
-        concat += `file ${i}.webm\n`;
+        concat += `file '${i}.webm'\n`;
     }
     ffmpeg.FS('writeFile', 'concat.txt', Uint8Array.from(concat.split('').map(letter => letter.charCodeAt(0))));
-    await ffmpeg.run(
-        '-y',
-        '-f', 'concat',
-        '-safe', '0',
-        '-i', 'concat.txt',
-        '-c', 'copy',
-        'vid.webm'
-    );
 
+    // Stream-copying WebM segments is fragile when FFmpeg generated
+    // segments have slightly different headers/timestamps. Try the fast
+    // copy first, then fall back to a fresh VP8 encode from the same
+    // segments so the final export is reliable.
+    let concatCreated = false;
     try {
+        await ffmpeg.run(
+            '-y',
+            '-f', 'concat',
+            '-safe', '0',
+            '-i', 'concat.txt',
+            '-c', 'copy',
+            'vid.webm'
+        );
         ffmpeg.FS('readFile', 'vid.webm');
-    } catch {
-        throw new Error('FFmpeg finished video concatenation but did not create vid.webm.');
+        concatCreated = true;
+    } catch (error) {
+        console.warn('WebM stream-copy concat failed, retrying with re-encode:', error);
+    }
+
+    if (!concatCreated) {
+        try {
+            await ffmpeg.run(
+                '-y',
+                '-f', 'concat',
+                '-safe', '0',
+                '-i', 'concat.txt',
+                '-c:v', 'libvpx',
+                '-pix_fmt', 'yuv420p',
+                '-b:v', '0',
+                '-crf', crf,
+                '-r', fps,
+                'vid.webm'
+            );
+            ffmpeg.FS('readFile', 'vid.webm');
+            concatCreated = true;
+        } catch (error) {
+            console.error('WebM re-encode concat failed:', error);
+        }
+    }
+
+    if (!concatCreated) {
+        throw new Error('FFmpeg could not join the processed WebM segments.');
     }
 
     setProgress(95);
