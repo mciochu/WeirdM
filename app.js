@@ -374,10 +374,31 @@ const makeVideo = async (file) => {
     const inputName = `input.${extension}`;
     const outputName = sanitizeDownloadName(file.name);
 
+    if (typeof SharedArrayBuffer === "undefined" || window.crossOriginIsolated !== true) {
+        throw new Error(
+            "This page is not cross-origin isolated. Configure Render with " +
+            "Cross-Origin-Opener-Policy: same-origin and " +
+            "Cross-Origin-Embedder-Policy: require-corp."
+        );
+    }
+
+    if (!file.size) {
+        throw new Error("The selected video file is empty.");
+    }
+
     setProgress(0);
     setStatus("Loading video engine…");
 
     await createFFmpegInstance();
+
+    setStatus("Loading image processor…");
+    if (!window.magickReady) {
+        throw new Error("ImageMagick loader is unavailable.");
+    }
+    await window.magickReady;
+    if (!window.Magick || typeof window.Magick.Call !== "function") {
+        throw new Error("ImageMagick failed to initialize."); 
+    }
     throwIfCancelled();
 
     setProgress(5);
