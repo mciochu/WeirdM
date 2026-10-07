@@ -29,8 +29,9 @@
     <section class="card" aria-labelledby="about-title">
         <h2 id="about-title">About</h2>
         <p>
-            WeirdM turns a normal video into a WebM whose dimensions can change while it plays.
-            Processing happens locally in your browser; your video is not uploaded to a server.
+            WeirdM takes only the first frame of your video and turns it into a WebM whose dimensions
+            change while the original audio keeps playing. Processing happens locally in your browser;
+            your video is not uploaded to a server.
         </p>
         <p>
             Source code:
@@ -65,7 +66,7 @@
 
             <label class="option">
                 <input type="radio" id="trim" name="mode">
-                <span>Trim</span>
+                <span>Trim first frame</span>
             </label>
         </fieldset>
 
@@ -125,7 +126,9 @@
             id="filepicker"
             accept="video/*,.avi,.mkv,.webm,.mov,.mp4,.m4v"
         >
-        <p class="hint">Long or high-resolution videos need more browser memory.</p>
+        <p class="hint">
+            Only one graphic is decoded: the first frame. The rest of the source video is used only for its duration and audio.
+        </p>
 
         <div class="actions">
             <button class="button start" type="button">Process</button>
