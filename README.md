@@ -1,4 +1,14 @@
-# WeirdM
+# WeirdM — AI-assisted fork
+
+> **This is a fork of [rebane2001/WeirdM](https://github.com/rebane2001/WeirdM).**
+>
+> The original WeirdM project was created by **rebane2001**. This repository is **not the original project and does not claim original authorship**. It is a modified fork maintained under **[mciochu/WeirdM](https://github.com/mciochu/WeirdM)**.
+>
+> The current fork contains substantial changes developed and maintained with **AI assistance**, including the browser processing pipeline, AV1 browser-decoder fallback, single-frame processing model, diagnostics, UI, and Render configuration.
+>
+> **Original source:** https://github.com/rebane2001/WeirdM  
+> **License:** Unlicense (see upstream repository).
+
 
 WeirdM creates WebM videos whose **dimensions change while the video is playing**, while keeping the source audio running.
 
@@ -26,7 +36,7 @@ Changes horizontal and/or vertical size using sine/cosine motion.
 
 ### Random
 
-Chooses a new horizontal and/or vertical size for every frame.
+Chooses a new horizontal and/or vertical size for each generated size segment. The source video itself is not decoded frame-by-frame.
 
 ### Trim first frame
 
@@ -75,10 +85,25 @@ node --check app.js
 
 A GitHub Actions workflow also checks JavaScript syntax, static file references, and the Render configuration on pushes to `mane`.
 
-## Performance notes
+## Processing model
 
-Video processing is CPU- and memory-intensive because frames are decoded and manipulated in the browser.
+The current fork intentionally does **not** process every source frame.
 
-The current pipeline releases processed PNG frames immediately after their WebM segment is encoded and periodically recreates the FFmpeg worker while retaining only the source and already-created WebM segments.
+For each input video:
 
-The dynamic-size video uses a bounded number of WebM segments (up to 240), so a 4-minute source does not produce thousands of intermediate image files.
+- exactly one graphic is extracted: the first video frame;
+- that graphic is reused for the entire output;
+- the source video's remaining frames are ignored;
+- the output duration comes from the source video;
+- the source audio is extracted and encoded to Opus;
+- the single graphic is encoded into a bounded number of dynamic-size WebM segments (up to 240).
+
+This keeps long inputs much lighter than frame-by-frame processing while preserving the WeirdM resizing concept.
+
+## Attribution
+
+This repository is a modified fork of **[rebane2001/WeirdM](https://github.com/rebane2001/WeirdM)**.
+
+The original project and its historical implementation belong to the upstream project. Changes in this fork are maintained under `mciochu/WeirdM` and have been developed with AI assistance.
+
+Please refer to the upstream repository for the original project history and source context.
