@@ -322,6 +322,9 @@ const detectInputFps = async (inputName) => {
 
     const probeText = lastFfmpegOutput;
     const match = probeText.match(/(\d+(?:\.\d+)?)\s+fps\b/);
+    const codecMatch = probeText.match(/Video:\s+([a-z0-9_]+)/i);
+    const codec = codecMatch ? codecMatch[1].toLowerCase() : null;
+    const decoderMissing = /Decoder \(codec [^)]+\) not found for input stream/i.test(probeText);
 
     if (match) {
         fps = Number(match[1]);
@@ -331,7 +334,148 @@ const detectInputFps = async (inputName) => {
         addLog(`Could not reliably detect FPS; using fallback ${DEFAULT_FPS}.`, "WARN");
     }
 
+    addLog({
+        detectedVideoCodec: codec || "(unknown)",
+        ffmpegVideoDecoderAvailable: !decoderMissing,
+    }, "INPUT");
+
     finishStep("Detect input video properties");
+
+    return {
+        codec,
+        decoderMissing,
+        probeText,
+    };
+};
+
+const waitForVideoEvent = (video, eventName, timeoutMs = 15000) => new Promise((resolve, reject) => {
+    const onEvent = () => cleanup(resolve);
+    const onError = () => cleanup(reject, new Error(`Browser video decoder emitted an error while waiting for ${eventName}.`));
+    const timer = setTimeout(() => cleanup(reject, new Error(`Timed out waiting for browser video event "${eventName}".`)), timeoutMs);
+
+    const cleanup = (callback, value) => {
+        clearTimeout(timer);
+        video.removeEventListener(eventName, onEvent);
+        video.removeEventListener("error", onError);
+        callback(value);
+    };
+
+    video.addEventListener(eventName, onEvent, { once: true });
+    video.addEventListener("error", onError, { once: true });
+});
+
+const canvasToPngBytes = (canvas) => new Promise((resolve, reject) => {
+    canvas.toBlob(async (blob) => {
+        if (!blob) {
+            reject(new Error("Browser could not encode a decoded frame as PNG."));
+            return;
+        }
+
+        try {
+            resolve(new Uint8Array(await blob.arrayBuffer()));
+        } catch (error) {
+            reject(error);
+        }
+    }, "image/png");
+});
+
+const extractFramesWithBrowser = async (file) => {
+    startStep("Decode source video with browser fallback");
+
+    const video = document.createElement("video");
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d", { willReadFrequently: false });
+
+    if (!context) {
+        throw new Error("Browser canvas 2D context is unavailable; cannot extract video frames.");
+    }
+
+    const objectUrl = URL.createObjectURL(file);
+    let frameCount = 0;
+
+    try {
+        video.preload = "auto";
+        video.muted = true;
+        video.playsInline = true;
+        video.src = objectUrl;
+
+        addLog(`Native browser decoder input MIME: ${file.type || "(unknown)"}`, "INPUT");
+        addLog(`HTMLVideoElement canPlayType(video/mp4): ${video.canPlayType("video/mp4") || "empty"}`, "INPUT");
+        addLog(`HTMLVideoElement canPlayType(video/webm): ${video.canPlayType("video/webm") || "empty"}`, "INPUT");
+
+        await waitForVideoEvent(video, "loadedmetadata");
+        await waitForVideoEvent(video, "loadeddata");
+
+        if (!Number.isFinite(video.duration) || video.duration <= 0) {
+            throw new Error("Browser video decoder loaded the file but returned no usable duration.");
+        }
+
+        const width = video.videoWidth;
+        const height = video.videoHeight;
+
+        if (!width || !height) {
+            throw new Error("Browser video decoder returned an invalid video size.");
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+
+        const totalFrames = Math.max(1, Math.ceil(video.duration * fps));
+        addLog({
+            durationSeconds: video.duration,
+            width,
+            height,
+            extractionFps: fps,
+            estimatedFrames: totalFrames,
+        }, "INPUT");
+
+        video.pause();
+
+        for (let index = 0; index < totalFrames; index++) {
+            throwIfCancelled();
+
+            const targetTime = Math.min(
+                Math.max(0, index / fps),
+                Math.max(0, video.duration - 0.001)
+            );
+
+            video.currentTime = targetTime;
+            await waitForVideoEvent(video, "seeked");
+
+            context.drawImage(video, 0, 0, width, height);
+
+            const pngBytes = await canvasToPngBytes(canvas);
+            const frameName = String(index + 1).padStart(6, "0") + ".png";
+            ffmpeg.FS("writeFile", frameName, pngBytes);
+            frameCount++;
+
+            if (
+                index === 0 ||
+                index === totalFrames - 1 ||
+                (index + 1) % Math.max(1, Math.floor(totalFrames / 20)) === 0
+            ) {
+                addLog(`Browser decoded frame ${index + 1}/${totalFrames} at ${targetTime.toFixed(3)}s.`);
+            }
+
+            setProgress(5 + Math.floor(((index + 1) / totalFrames) * 5));
+        }
+
+        addLog(`Browser fallback decoded ${frameCount} PNG frames successfully.`, "SUCCESS");
+        finishStep("Decode source video with browser fallback");
+
+        return frameCount;
+    } catch (error) {
+        addLog("Browser decoder fallback failed.", "ERROR");
+        addLog(error, "ERROR");
+        throw error;
+    } finally {
+        video.pause();
+        video.removeAttribute("src");
+        video.load();
+        URL.revokeObjectURL(objectUrl);
+        canvas.width = 1;
+        canvas.height = 1;
+    }
 };
 
 const recycleFFmpeg = async (segmentCount, inputName) => {
@@ -562,48 +706,66 @@ const makeVideo = async (file) => {
     ffmpeg.FS("writeFile", inputName, new Uint8Array(await file.arrayBuffer()));
 
     setStatus("Reading video information…");
-    await detectInputFps(inputName);
+    const inputProbe = await detectInputFps(inputName);
 
     setStatus(`Extracting frames at about ${fps} FPS…`);
-    startStep("Decode source video into PNG frames");
 
-    // Explicitly use the image2 muxer and preserve the source frame rate.
-    // This avoids relying on the input extension and makes MP4/MOV/WebM
-    // decoding behave consistently in the older FFmpeg.wasm runtime.
-    await runFFmpeg(
-        "-y",
-        "-i", inputName,
-        "-map", "0:v:0",
-        "-an",
-        "-sn",
-        "-dn",
-        "-vsync", "0",
-        "-f", "image2",
-        "-start_number", "1",
-        "%06d.png"
-    );
+    let decodedFrames;
 
-    const decodedFrames = listFiles()
-        .filter((name) => /^\d+\.png$/i.test(name))
-        .sort((a, b) => Number(a.slice(0, -4)) - Number(b.slice(0, -4)));
-
-    if (!decodedFrames.length) {
-        const files = listFiles()
-            .filter((name) => name !== "." && name !== "..")
-            .slice(0, 40);
-
-        throw new Error(
-            "FFmpeg decoded no video frames. " +
-            "The MP4 container is supported, but its video codec may not be " +
-            "supported by this browser FFmpeg build." +
-            (files.length ? ` Files in FFmpeg filesystem: ${files.join(", ")}.` : "")
+    if (inputProbe.decoderMissing) {
+        addLog(
+            `FFmpeg cannot decode codec "${inputProbe.codec || "unknown"}". Switching to native browser video decoding.`,
+            "WARN"
         );
+
+        await extractFramesWithBrowser(file);
+
+        decodedFrames = listFiles()
+            .filter((name) => /^\d+\.png$/i.test(name))
+            .sort((a, b) => Number(a.slice(0, -4)) - Number(b.slice(0, -4)));
+
+        if (!decodedFrames.length) {
+            throw new Error(
+                `Neither FFmpeg nor the browser produced video frames for codec "${inputProbe.codec || "unknown"}".`
+            );
+        }
+    } else {
+        startStep("Decode source video into PNG frames");
+
+        // Explicitly use the image2 muxer and preserve the source frame rate.
+        await runFFmpeg(
+            "-y",
+            "-i", inputName,
+            "-map", "0:v:0",
+            "-an",
+            "-sn",
+            "-dn",
+            "-vsync", "0",
+            "-f", "image2",
+            "-start_number", "1",
+            "%06d.png"
+        );
+
+        decodedFrames = listFiles()
+            .filter((name) => /^\d+\.png$/i.test(name))
+            .sort((a, b) => Number(a.slice(0, -4)) - Number(b.slice(0, -4)));
+
+        if (!decodedFrames.length) {
+            const files = listFiles()
+                .filter((name) => name !== "." && name !== "..")
+                .slice(0, 40);
+
+            throw new Error(
+                "FFmpeg decoded no video frames." +
+                (files.length ? ` Files in FFmpeg filesystem: ${files.join(", ")}.` : "")
+            );
+        }
+
+        finishStep("Decode source video into PNG frames");
     }
 
     const framesTotal = decodedFrames.length;
-    addLog(`FFmpeg decoded ${framesTotal} PNG frames.`);
-
-    finishStep("Decode source video into PNG frames");
+    addLog(`Total decoded PNG frames available for processing: ${framesTotal}.`);
     setProgress(10);
     setStatus(`Processing ${framesTotal} frames…`);
     startStep(`Apply ${mode.toUpperCase()} effect to frames`);
